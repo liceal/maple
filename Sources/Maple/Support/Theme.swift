@@ -666,18 +666,84 @@ final class FocusRingOverlay: NSView {
         didSet { needsDisplay = true }
     }
 
+    var isCardMode: Bool = false {
+        didSet { needsDisplay = true }
+    }
+
+    /// 各个角的独立圆角（左上，右上，左下，右下）
+    var cornerRadii: (topLeft: CGFloat, topRight: CGFloat, bottomLeft: CGFloat, bottomRight: CGFloat) = (0, 0, 0, 0) {
+        didSet { needsDisplay = true }
+    }
+
     override var isOpaque: Bool { false }
+    override var isFlipped: Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func draw(_ dirtyRect: NSRect) {
         guard color != .clear else { return }
         let inset = lineWidth / 2
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: inset, dy: inset),
-                                xRadius: 4, yRadius: 4)
+        let drawBounds = bounds.insetBy(dx: inset, dy: inset)
+        guard drawBounds.width > 0, drawBounds.height > 0 else { return }
+
+        let path: NSBezierPath
+        if isCardMode {
+            // 方案 2：卡片悬浮风，四周均为大圆角 R10
+            path = NSBezierPath(roundedRect: drawBounds, xRadius: 10, yRadius: 10)
+        } else if cornerRadii.bottomRight > 0 || cornerRadii.bottomLeft > 0 || cornerRadii.topRight > 0 || cornerRadii.topLeft > 0 {
+            // 方案 3：智能角位贴合，使用选择性同心圆角
+            path = makeSelectivePath(rect: drawBounds,
+                                     tl: cornerRadii.topLeft,
+                                     tr: cornerRadii.topRight,
+                                     br: cornerRadii.bottomRight,
+                                     bl: cornerRadii.bottomLeft)
+        } else {
+            path = NSBezierPath(roundedRect: drawBounds, xRadius: 3, yRadius: 3)
+        }
+
         path.lineWidth = lineWidth
         color.setStroke()
         path.stroke()
+    }
+
+    private func makeSelectivePath(rect: NSRect, tl: CGFloat, tr: CGFloat, br: CGFloat, bl: CGFloat) -> NSBezierPath {
+        let path = NSBezierPath()
+        let minX = rect.minX
+        let maxX = rect.maxX
+        let minY = rect.minY
+        let maxY = rect.maxY
+
+        path.move(to: NSPoint(x: minX + tl, y: minY))
+        path.line(to: NSPoint(x: maxX - tr, y: minY))
+        if tr > 0 {
+            path.appendArc(from: NSPoint(x: maxX, y: minY), to: NSPoint(x: maxX, y: minY + tr), radius: tr)
+        } else {
+            path.line(to: NSPoint(x: maxX, y: minY))
+        }
+
+        path.line(to: NSPoint(x: maxX, y: maxY - br))
+        if br > 0 {
+            path.appendArc(from: NSPoint(x: maxX, y: maxY), to: NSPoint(x: maxX - br, y: maxY), radius: br)
+        } else {
+            path.line(to: NSPoint(x: maxX, y: maxY))
+        }
+
+        path.line(to: NSPoint(x: minX + bl, y: maxY))
+        if bl > 0 {
+            path.appendArc(from: NSPoint(x: minX, y: maxY), to: NSPoint(x: minX, y: maxY - bl), radius: bl)
+        } else {
+            path.line(to: NSPoint(x: minX, y: maxY))
+        }
+
+        path.line(to: NSPoint(x: minX, y: minY + tl))
+        if tl > 0 {
+            path.appendArc(from: NSPoint(x: minX, y: minY), to: NSPoint(x: minX + tl, y: minY), radius: tl)
+        } else {
+            path.line(to: NSPoint(x: minX, y: minY))
+        }
+
+        path.close()
+        return path
     }
 
     override func viewDidChangeEffectiveAppearance() {

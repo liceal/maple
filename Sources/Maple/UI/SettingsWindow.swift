@@ -17,6 +17,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private var languageRadios: [NSButton] = []
     private var sidebarIconRadios: [NSButton] = []
     private var sidebarIconStyleRadios: [NSButton] = []
+    private var cornerSchemeRadios: [NSButton] = []
     private let showPaneBorderCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let highlightPaneAddressBarCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let keepPaneCornerRadiusCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
@@ -403,6 +404,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             showPaneBorderCheckbox, highlightPaneAddressBarCheckbox, keepPaneCornerRadiusCheckbox
         ])
         stack.addArrangedSubview(paneRow)
+
+        // 圆角方案：( ) 顶栏高亮   ( ) 间距分块   (•) 无缝贴边
+        let schemeNative = NSButton(radioButtonWithTitle: "顶栏高亮".localized, target: self, action: #selector(cornerSchemeRadioSelected(_:)))
+        let schemeCards = NSButton(radioButtonWithTitle: "间距分块".localized, target: self, action: #selector(cornerSchemeRadioSelected(_:)))
+        let schemeSmart = NSButton(radioButtonWithTitle: "无缝贴边".localized, target: self, action: #selector(cornerSchemeRadioSelected(_:)))
+        cornerSchemeRadios = [schemeNative, schemeCards, schemeSmart]
+        let schemeRow = makeControlRow(label: "圆角方案：".localized, labelWidth: labelWidth, views: cornerSchemeRadios)
+        stack.addArrangedSubview(schemeRow)
 
         // 侧边预览：[x] 显示项目信息
         showItemInfoCheckbox.title = "显示项目信息".localized
@@ -1217,6 +1226,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         showPaneBorderCheckbox.state = AppSettings.showPaneBorder ? .on : .off
         highlightPaneAddressBarCheckbox.state = AppSettings.highlightPaneAddressBar ? .on : .off
         keepPaneCornerRadiusCheckbox.state = AppSettings.keepPaneCornerRadius ? .on : .off
+        let schemeVal = AppSettings.cornerScheme.rawValue
+        for (idx, r) in cornerSchemeRadios.enumerated() {
+            r.state = (idx + 1 == schemeVal) ? .on : .off
+        }
         showItemInfoCheckbox.state = AppSettings.showItemInfo ? .on : .off
         hideBottomStatusBarCheckbox.state = AppSettings.hideBottomStatusBar ? .on : .off
         calculateFolderSizesCheckbox.state = AppSettings.calculateFolderSizes ? .on : .off
@@ -1284,6 +1297,17 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         AppSettings.showPaneBorder = (showPaneBorderCheckbox.state == .on)
         AppSettings.highlightPaneAddressBar = (highlightPaneAddressBarCheckbox.state == .on)
         AppSettings.keepPaneCornerRadius = (keepPaneCornerRadiusCheckbox.state == .on)
+    }
+
+    @objc private func cornerSchemeRadioSelected(_ sender: NSButton) {
+        cornerSchemeRadios.forEach { $0.state = ($0 == sender) ? .on : .off }
+        if sender == cornerSchemeRadios.first {
+            AppSettings.cornerScheme = .native
+        } else if cornerSchemeRadios.count > 1 && sender == cornerSchemeRadios[1] {
+            AppSettings.cornerScheme = .cards
+        } else {
+            AppSettings.cornerScheme = .smart
+        }
     }
 
     @objc private func itemInfoToggled() {

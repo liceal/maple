@@ -280,6 +280,45 @@ enum AppSettings {
         }
     }
 
+    /// 窗格圆角与焦点设计方案
+    public enum CornerScheme: Int, CaseIterable, Codable {
+        /// 方案 1：顶栏高亮（顶栏微底色 + 顶栏分隔线高亮，取消全包围外圈，零外切）
+        case native = 1
+        /// 方案 2：间距分块（6px呼吸边距 + R10独立分块 + 悬浮外框）
+        case cards = 2
+        /// 方案 3：无缝贴边（满铺贴合 + 右下角 R10.5 同心大圆角 + 预览按钮避让）
+        case smart = 3
+
+        public var title: String {
+            switch self {
+            case .native: return "顶栏高亮".localized
+            case .cards:  return "间距分块".localized
+            case .smart:  return "无缝贴边".localized
+            }
+        }
+    }
+
+    private static var _cornerScheme: CornerScheme = {
+        if let env = ProcessInfo.processInfo.environment["MAPLE_CORNER_SCHEME"], let val = Int(env), let s = CornerScheme(rawValue: val) {
+            return s
+        }
+        if let plistVal = Bundle.main.object(forInfoDictionaryKey: "MapleCornerScheme") as? Int, let s = CornerScheme(rawValue: plistVal) {
+            return s
+        }
+        if let raw = store.object(forKey: "cornerScheme") as? Int, let s = CornerScheme(rawValue: raw) {
+            return s
+        }
+        return .smart
+    }()
+    public static var cornerScheme: CornerScheme {
+        get { _cornerScheme }
+        set {
+            _cornerScheme = newValue
+            store.set(newValue.rawValue, forKey: "cornerScheme")
+            NotificationCenter.default.post(name: .paneAppearanceDidChange, object: nil)
+        }
+    }
+
     /// 当前激活窗格是否显示边框
     private static var _showPaneBorder: Bool = (store.object(forKey: "showPaneBorder") as? Bool) ?? true
     static var showPaneBorder: Bool {

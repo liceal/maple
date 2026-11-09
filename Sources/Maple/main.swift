@@ -283,6 +283,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let container = OpaqueBackgroundView(frame: frame)
         container.autoresizingMask = [.width, .height]
         container.color = Theme.paneBackground
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 10.5
+        container.layer?.masksToBounds = true
         self.container = container
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         workspace.translatesAutoresizingMaskIntoConstraints = false

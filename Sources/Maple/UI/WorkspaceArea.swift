@@ -191,6 +191,12 @@ final class WorkspaceArea: NSView {
         loadSplits()
         rebuildPanes()
         rebuildDividers()
+        NotificationCenter.default.addObserver(forName: .paneAppearanceDidChange, object: nil, queue: .main) { [weak self] _ in
+            self?.needsLayout = true
+            self?.needsDisplay = true
+            self?.layoutSubtreeIfNeeded()
+            self?.panes.forEach { $0.updateFocusVisuals() }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -228,8 +234,13 @@ final class WorkspaceArea: NSView {
 
     /// 窗格之间的 1pt 缝隙底色，同样用绘制填充。
     override func draw(_ dirtyRect: NSRect) {
-        Theme.hairline.setFill()
-        bounds.fill()
+        if AppSettings.cornerScheme == .cards {
+            NSColor.windowBackgroundColor.setFill()
+            bounds.fill()
+        } else {
+            Theme.hairline.setFill()
+            bounds.fill()
+        }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -242,8 +253,17 @@ final class WorkspaceArea: NSView {
     override func layout() {
         super.layout()
         let cells = cellFrames()
+        let normalized = mode.normalizedCells
         for (index, pane) in panes.enumerated() where index < cells.count {
             pane.frame = cells[index]
+            if index < normalized.count {
+                let n = normalized[index]
+                pane.isAtBottomRight = (n.maxX >= 0.9999 && n.maxY >= 0.9999)
+                pane.isAtBottomLeft = (n.minX <= 0.0001 && n.maxY >= 0.9999)
+                pane.isAtTopRight = (n.maxX >= 0.9999 && n.minY <= 0.0001)
+                pane.isAtTopLeft = (n.minX <= 0.0001 && n.minY <= 0.0001)
+            }
+            pane.updateFocusVisuals()
         }
         layoutDividers()
     }
@@ -407,6 +427,38 @@ final class WorkspaceArea: NSView {
     }
 
     private func cellFrames() -> [NSRect] {
+        if AppSettings.cornerScheme == .cards {
+            let pad: CGFloat = 6
+            let cardGap: CGFloat = 6
+            let innerRect = bounds.insetBy(dx: pad, dy: pad)
+            guard innerRect.width > 0, innerRect.height > 0 else { return [] }
+            let cells = mode.normalizedCells
+            var result: [NSRect] = []
+            for cell in cells {
+                let x0 = mappedX(cell.minX)
+                let x1 = mappedX(cell.maxX)
+                let y0 = mappedY(cell.minY)
+                let y1 = mappedY(cell.maxY)
+                var frame = NSRect(
+                    x: innerRect.minX + x0 * innerRect.width,
+                    y: innerRect.minY + y0 * innerRect.height,
+                    width: (x1 - x0) * innerRect.width,
+                    height: (y1 - y0) * innerRect.height
+                )
+                let isLeftEdge = cell.minX <= 0.0001
+                let isRightEdge = cell.maxX >= 0.9999
+                let isTopEdge = cell.minY <= 0.0001
+                let isBottomEdge = cell.maxY >= 0.9999
+                let halfGap = cardGap / 2
+                frame.origin.x += isLeftEdge ? 0 : halfGap
+                frame.origin.y += isTopEdge ? 0 : halfGap
+                frame.size.width -= (isLeftEdge ? 0 : halfGap) + (isRightEdge ? 0 : halfGap)
+                frame.size.height -= (isTopEdge ? 0 : halfGap) + (isBottomEdge ? 0 : halfGap)
+                result.append(frame.integral)
+            }
+            return result
+        }
+
         let gap = Theme.paneGap
         let rect = bounds
         let cells = mode.normalizedCells

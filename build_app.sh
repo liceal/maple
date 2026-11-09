@@ -10,7 +10,7 @@ export LC_ALL=en_US.UTF-8
 GIT_LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git tag -l "v*" --sort=-v:refname 2>/dev/null | head -n 1 || true)
 DETECTED_VERSION=$(echo "$GIT_LATEST_TAG" | sed -E 's/^v//')
 
-VERSION="${1:-${MAPLE_VERSION:-${DETECTED_VERSION:-1.0.0}}}"
+VERSION="${1:-${MAPLE_VERSION:-${DETECTED_VERSION:-1.0.7}}}"
 echo "→ 准备构建 Maple v${VERSION} (来源: ${1:+入参}${MAPLE_VERSION:+环境变量}${DETECTED_VERSION:+Git Tag: $GIT_LATEST_TAG}) ..."
 
 # 检测是否有可用的 Apple Developer / Developer ID 签名证书

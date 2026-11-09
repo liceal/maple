@@ -163,6 +163,13 @@ final class SearchPanelController: NSObject {
         topBar.addSubview(searchNowButton)
 
         scopeControl.translatesAutoresizingMaskIntoConstraints = false
+        searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        searchNowButton.setContentHuggingPriority(.required, for: .horizontal)
+        searchNowButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        scopeControl.setContentHuggingPriority(.required, for: .horizontal)
+        scopeControl.setContentCompressionResistancePriority(.required, for: .horizontal)
+        viewModeBar.setContentHuggingPriority(.required, for: .horizontal)
+        viewModeBar.setContentCompressionResistancePriority(.required, for: .horizontal)
         scopeControl.onScopeChanged = { [weak self] _ in
             guard let self else { return }
             self.exitDrilldownIfNeeded(reloadSearch: false)
@@ -459,6 +466,8 @@ final class SearchPanelController: NSObject {
     func show(anchoredTo anchor: NSView? = nil, in window: NSWindow) {
         hostWindow = window
         FileSearchEngine.shared.loadIndex()
+        scopeControl.invalidateIntrinsicContentSize()
+        scopeControl.needsDisplay = true
         updatePlaceholder()
 
         let winFrame = window.frame
@@ -1203,11 +1212,24 @@ private final class SearchScopePillControl: NSView {
         }
     }
 
-    private let titles = ["此 Mac", "当前文件夹"]
-    private static let itemWidths: [CGFloat] = [54, 72]
+    private var titles: [String] {
+        ["此 Mac".localized, "当前文件夹".localized]
+    }
+
+    private let horizontalPadding: CGFloat = 11
+    private let inset: CGFloat = 2
+
+    private func segmentNaturalWidths() -> [CGFloat] {
+        let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        return titles.map { title in
+            let textWidth = ceil(NSAttributedString(string: title, attributes: [.font: font]).size().width)
+            return textWidth + horizontalPadding * 2
+        }
+    }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: Self.itemWidths.reduce(0, +) + 6, height: 24)
+        let total = segmentNaturalWidths().reduce(0, +) + inset * 2
+        return NSSize(width: total, height: 24)
     }
 
     func toggleScope() {
@@ -1219,28 +1241,69 @@ private final class SearchScopePillControl: NSView {
         self.isCurrentFolder = isCurrentFolder
     }
 
+    /// 精准计算每个 segment 在当前 bounds 下的 CGRect（两端边距绝对对称等于 inset=2pt）
+    private func segmentRects() -> [NSRect] {
+        let innerRect = bounds.insetBy(dx: inset, dy: inset)
+        guard innerRect.width > 0, innerRect.height > 0 else { return [] }
+
+        let measured = segmentNaturalWidths()
+        let totalMeasured = max(1, measured.reduce(0, +))
+
+        var rects: [NSRect] = []
+        var curX = innerRect.minX
+        for (i, w) in measured.enumerated() {
+            let segW: CGFloat
+            if i == measured.count - 1 {
+                // 最后一个 segment 精准吃满剩余宽度，确保右边缘与 bounds 边框距离严格为 2pt
+                segW = max(0, innerRect.maxX - curX)
+            } else {
+                let ratio = w / totalMeasured
+                segW = floor(innerRect.width * ratio)
+            }
+            rects.append(NSRect(x: curX, y: innerRect.minY, width: segW, height: innerRect.height))
+            curX += segW
+        }
+        return rects
+    }
+
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        let firstEnd = 3 + Self.itemWidths[0]
-        isCurrentFolder = (p.x > firstEnd)
+        let rects = segmentRects()
+        if rects.count >= 2 {
+            if rects[0].contains(p) {
+                isCurrentFolder = false
+            } else if rects[1].contains(p) {
+                isCurrentFolder = true
+            } else {
+                isCurrentFolder = (p.x >= rects[0].maxX)
+            }
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // 1. 外部胶囊底色
         let bgPath = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
         NSColor.labelColor.withAlphaComponent(0.06).setFill()
         bgPath.fill()
 
+        let rects = segmentRects()
+        guard rects.count == titles.count else { return }
+
+        // 2. 选中项胶囊高亮（完美贴合当前 segment，左右上下间距均为严格的 inset=2pt）
         let activeIndex = isCurrentFolder ? 1 : 0
-        let xOffset: CGFloat = activeIndex == 0 ? 2 : (2 + Self.itemWidths[0])
-        let activeWidth = Self.itemWidths[activeIndex]
-        let pillRect = NSRect(x: xOffset, y: 2, width: activeWidth, height: bounds.height - 4)
-        let pillPath = NSBezierPath(roundedRect: pillRect, xRadius: 5, yRadius: 5)
+        let activeRect = rects[activeIndex]
+        let pillPath = NSBezierPath(roundedRect: activeRect, xRadius: 5, yRadius: 5)
         NSColor.controlAccentColor.withAlphaComponent(0.20).setFill()
         pillPath.fill()
 
-        var curX: CGFloat = 2
+        // 3. 绘制文字（精准居中）
         for (i, title) in titles.enumerated() {
-            let w = Self.itemWidths[i]
+            let segRect = rects[i]
             let isSelected = (i == activeIndex)
             let font = NSFont.systemFont(ofSize: 11, weight: isSelected ? .semibold : .regular)
             let color: NSColor = isSelected ? .controlAccentColor : .secondaryLabelColor
@@ -1249,12 +1312,13 @@ private final class SearchScopePillControl: NSView {
                 .foregroundColor: color
             ])
             let size = attr.size()
-            let drawRect = NSRect(x: curX + (w - size.width) / 2,
-                                  y: (bounds.height - size.height) / 2,
-                                  width: size.width,
-                                  height: size.height)
+            let drawRect = NSRect(
+                x: segRect.minX + (segRect.width - size.width) / 2,
+                y: segRect.minY + (segRect.height - size.height) / 2,
+                width: size.width,
+                height: size.height
+            )
             attr.draw(in: drawRect)
-            curX += w
         }
     }
 }

@@ -58,16 +58,101 @@ final class PaneView: NSView {
     }
 
     func updateFocusVisuals() {
-        pathBar.isActive = isFocused && AppSettings.highlightPaneAddressBar
-        headerTint.fillColor = (isFocused && AppSettings.highlightPaneAddressBar)
-            ? NSColor.controlAccentColor.withAlphaComponent(0.17)
-            : .clear
-        focusRing.color = (isFocused && AppSettings.showPaneBorder)
-            ? NSColor.controlAccentColor.withAlphaComponent(0.85)
-            : .clear
+        let scheme = AppSettings.cornerScheme
+        switch scheme {
+        case .native:
+            pathBar.isActive = isFocused && AppSettings.highlightPaneAddressBar
+            headerTint.fillColor = (isFocused && AppSettings.highlightPaneAddressBar)
+                ? NSColor.controlAccentColor.withAlphaComponent(0.18)
+                : .clear
+            headerSeparator.fillColor = isFocused
+                ? NSColor.controlAccentColor.withAlphaComponent(0.85)
+                : Theme.hairline
+            focusRing.color = .clear
+            previewButtonTrailingConstraint?.constant = -8
+            wantsLayer = true
+            layer?.cornerRadius = 0
+            layer?.masksToBounds = false
+            layer?.borderWidth = 0
+
+        case .cards:
+            pathBar.isActive = isFocused && AppSettings.highlightPaneAddressBar
+            headerTint.fillColor = (isFocused && AppSettings.highlightPaneAddressBar)
+                ? NSColor.controlAccentColor.withAlphaComponent(0.10)
+                : .clear
+            headerSeparator.fillColor = Theme.hairline
+            focusRing.isCardMode = true
+            focusRing.color = (isFocused && AppSettings.showPaneBorder)
+                ? NSColor.controlAccentColor.withAlphaComponent(0.85)
+                : .clear
+            previewButtonTrailingConstraint?.constant = -10
+            wantsLayer = true
+            layer?.cornerRadius = 10
+            layer?.masksToBounds = true
+            layer?.borderWidth = 1
+            layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+
+        case .smart:
+            pathBar.isActive = isFocused && AppSettings.highlightPaneAddressBar
+            headerTint.fillColor = (isFocused && AppSettings.highlightPaneAddressBar)
+                ? NSColor.controlAccentColor.withAlphaComponent(0.17)
+                : .clear
+            headerSeparator.fillColor = Theme.hairline
+            focusRing.isCardMode = false
+            focusRing.cornerRadii = (
+                topLeft: 0,
+                topRight: 0,
+                bottomLeft: 0,
+                bottomRight: isAtBottomRight ? 9.5 : 0
+            )
+            focusRing.color = (isFocused && AppSettings.showPaneBorder)
+                ? NSColor.controlAccentColor.withAlphaComponent(0.85)
+                : .clear
+            previewButtonTrailingConstraint?.constant = isAtBottomRight ? -15 : -8
+            wantsLayer = true
+            layer?.cornerRadius = 0
+            layer?.borderWidth = 0
+            updateCornerMask()
+        }
+
         iconView.isPaneActive = isFocused
         statusBar.isHidden = AppSettings.hideBottomStatusBar
         needsDisplay = true
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func layout() {
+        super.layout()
+        updateCornerMask()
+    }
+
+    private func updateCornerMask() {
+        guard AppSettings.cornerScheme == .smart, isAtBottomRight else {
+            if layer?.mask != nil {
+                layer?.mask = nil
+            }
+            return
+        }
+        wantsLayer = true
+        let r: CGFloat = 10.5
+        let rect = bounds
+        guard rect.width > 0, rect.height > 0 else { return }
+
+        let maskLayer = CAShapeLayer()
+        maskLayer.frame = rect
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
+        path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.maxY),
+                    tangent2End: CGPoint(x: rect.maxX - r, y: rect.maxY),
+                    radius: r)
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+
+        maskLayer.path = path
+        layer?.mask = maskLayer
     }
 
     /// 后退 / 前进的历史：**以地址栏显示的地址为唯一依据**。
@@ -112,7 +197,13 @@ final class PaneView: NSView {
         return currentSelection()
     }
 
-    // MARK: - 视图
+    // MARK: - 视图与拓扑角位状态
+    var isAtBottomRight: Bool = false
+    var isAtBottomLeft: Bool = false
+    var isAtTopRight: Bool = false
+    var isAtTopLeft: Bool = false
+    private var previewButtonTrailingConstraint: NSLayoutConstraint?
+    private let headerSeparator = Theme.backgroundView(Theme.hairline)
 
     private let header = Theme.backgroundView(Theme.paneBackground)
     private let headerTint = Theme.backgroundView(.clear)
@@ -233,8 +324,7 @@ final class PaneView: NSView {
         stack.setCustomSpacing(6, after: pathBar)
         header.addSubview(stack)
 
-        let separator = Theme.hairlineView()
-        header.addSubview(separator)
+        header.addSubview(headerSeparator)
 
         NSLayoutConstraint.activate([
             headerTint.topAnchor.constraint(equalTo: header.topAnchor),
@@ -247,10 +337,10 @@ final class PaneView: NSView {
             stack.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             stack.heightAnchor.constraint(equalToConstant: 24),
 
-            separator.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            separator.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            separator.bottomAnchor.constraint(equalTo: header.bottomAnchor),
-            separator.heightAnchor.constraint(equalToConstant: 1)
+            headerSeparator.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            headerSeparator.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            headerSeparator.bottomAnchor.constraint(equalTo: header.bottomAnchor),
+            headerSeparator.heightAnchor.constraint(equalToConstant: 1)
         ])
 
         header.heightAnchor.constraint(equalToConstant: Theme.headerHeight).isActive = true
@@ -454,7 +544,6 @@ final class PaneView: NSView {
             statusLeft.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 8),
             statusLeft.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor, constant: 0.5),
 
-            previewButton.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor, constant: -8),
             previewButton.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
 
             sizeSlider.trailingAnchor.constraint(equalTo: previewButton.leadingAnchor, constant: -6),
@@ -464,6 +553,9 @@ final class PaneView: NSView {
             statusRight.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor, constant: 0.5),
             statusRight.leadingAnchor.constraint(greaterThanOrEqualTo: statusLeft.trailingAnchor, constant: 8)
         ])
+        let pbt = previewButton.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor, constant: -8)
+        pbt.isActive = true
+        self.previewButtonTrailingConstraint = pbt
     }
 
     private func buildStatusBar() {

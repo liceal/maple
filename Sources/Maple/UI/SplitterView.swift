@@ -29,6 +29,7 @@ final class SplitterView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not implemented") }
 
     override func draw(_ dirtyRect: NSRect) {
+        if AppSettings.cornerScheme == .cards { return }
         // 居中画一道设备像素级 1px 发丝线，与列表列线、侧栏分隔线视觉一致，
         // 让分隔条可见、好抓（平时完全透明，只在中间留这条细缝）。
         let scale = (window?.screen?.backingScaleFactor) ?? 1
