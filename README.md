@@ -1,7 +1,7 @@
 <div align="center">
 
 <!-- 点击海报跳转至官网主页 -->
-[![Maple - macOS Multi-Pane File Manager](https://raw.githubusercontent.com/liceal/Maple/main/website/assets/poster.png)](https://liceal.github.io/maple)
+[![Maple - macOS Multi-Pane File Manager](https://raw.githubusercontent.com/liceal/Maple/main/docs/assets/poster.png)](https://liceal.github.io/maple)
 
 <br />
 
