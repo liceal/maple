@@ -644,11 +644,11 @@ final class KeyCollectionView: NSCollectionView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self),
+        if let field = InlineRenameField.activeField, field.isDescendant(of: self),
            let superview = self.superview {
-            let ptInEditor = editor.convert(point, from: superview)
-            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
-                return editor
+            let ptInField = field.convert(point, from: superview)
+            if field.bounds.insetBy(dx: -4, dy: -2).contains(ptInField) {
+                return (field.currentEditor() as? NSTextView) ?? field
             }
         }
         return super.hitTest(point)
@@ -662,18 +662,19 @@ final class KeyCollectionView: NSCollectionView {
         dragStartWindowPoint = event.locationInWindow
 
         let wasEditingBeforeClick: Bool
-        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self) {
-            let ptInEditor = editor.convert(event.locationInWindow, from: nil)
-            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
-                editor.mouseDown(with: event)
+        if let field = InlineRenameField.activeField, field.isDescendant(of: self) {
+            if field.containsWindowPoint(event.locationInWindow) {
+                (field.currentEditor() as? NSTextView)?.mouseDown(with: event)
                 return
             }
+            field.commitAndClose()
             wasEditingBeforeClick = true
         } else {
             wasEditingBeforeClick = InlineRenameTracker.didEndDuring(event: event)
         }
 
         window?.makeFirstResponder(self)
+        NSCursor.arrow.set()
         let didEndEditingOnThisClick = wasEditingBeforeClick || InlineRenameTracker.didEndDuring(event: event)
         onActivate?()
 
@@ -892,7 +893,7 @@ final class KeyCollectionView: NSCollectionView {
 
 // MARK: - 单元格（访达风格）
 
-final class FileIconItem: NSCollectionViewItem, NSTextFieldDelegate {
+final class FileIconItem: NSCollectionViewItem {
     static let identifier = NSUserInterfaceItemIdentifier("FileIconItem")
     /// 由 FileIconView 统一注入，保证所有单元格的图标尺寸一致。
     static var iconSize: CGFloat = Theme.gridIconSize
@@ -911,8 +912,8 @@ final class FileIconItem: NSCollectionViewItem, NSTextFieldDelegate {
     private let label = NSTextField(wrappingLabelWithString: "")
     private var model: FileItem?
 
-    private(set) var isInlineEditing: Bool = false
-    private var isStartingEditing = false
+    private var renameField: InlineRenameField?
+    var isInlineEditing: Bool { renameField != nil }
     var onCommitRename: ((String) -> Void)?
     var onCancelRename: (() -> Void)?
 
@@ -998,15 +999,10 @@ final class FileIconItem: NSCollectionViewItem, NSTextFieldDelegate {
 
     override func prepareForReuse() {
         super.prepareForReuse()
-        if isInlineEditing {
-            isInlineEditing = false
-            isStartingEditing = false
-            label.isEditable = false
-            label.isSelectable = false
-            label.drawsBackground = false
-            label.isBordered = false
-            label.layer?.borderWidth = 0
-            label.delegate = nil
+        if let field = renameField {
+            renameField = nil
+            field.cancelSilently()
+            label.isHidden = false
         }
         model = nil
         iconView.image = nil
@@ -1025,116 +1021,74 @@ final class FileIconItem: NSCollectionViewItem, NSTextFieldDelegate {
         return hitRect.contains(local)
     }
 
+    private func layoutRenameField() {
+        guard let field = renameField else { return }
+        let font = field.font ?? .systemFont(ofSize: 11)
+        let currentStr = (field.currentEditor() as? NSTextView)?.string ?? field.stringValue
+        let textW = (currentStr as NSString).size(withAttributes: [.font: font]).width
+        let maxW = max(56, view.bounds.width - 6)
+        let fieldW = min(maxW, max(56, ceil(textW) + 18))
+        let fieldH: CGFloat = 20
+        let fieldX = round((view.bounds.width - fieldW) / 2)
+        let fieldY = round(label.frame.maxY - fieldH + 2)
+        field.frame = NSRect(x: fieldX, y: max(2, fieldY), width: fieldW, height: fieldH)
+    }
+
     func startInlineEditing() {
-        guard !isInlineEditing else { return }
-        isInlineEditing = true
-        isStartingEditing = true
+        guard renameField == nil else { return }
+        let original = model?.name ?? label.stringValue
+        let isDir = model?.isNavigable ?? false
+        let font = label.font ?? .systemFont(ofSize: 11)
+
+        let field = InlineRenameField(text: original, isDirectory: isDir, font: font, alignment: .center)
+        self.renameField = field
         textBubble.isHidden = true
-        label.isEditable = true
-        label.isSelectable = true
-        label.drawsBackground = true
-        label.backgroundColor = .textBackgroundColor
-        label.textColor = .labelColor
-        label.isBordered = true
-        label.lineBreakMode = .byClipping
-        label.cell?.isScrollable = true
+        label.isHidden = true
+        view.addSubview(field)
+        view.layoutSubtreeIfNeeded()
+        layoutRenameField()
 
-        label.wantsLayer = true
-        label.layer?.cornerRadius = 3
-        label.layer?.masksToBounds = true
-        label.layer?.borderWidth = 1
-        label.layer?.borderColor = NSColor.separatorColor.cgColor
+        field.onTextChange = { [weak self] _ in
+            self?.layoutRenameField()
+        }
+        field.onEndEditing = { [weak self] rawText, commit in
+            guard let self else { return }
+            self.renameField = nil
+            self.label.isHidden = false
+            self.updateSelectionVisuals()
 
-        view.window?.makeFirstResponder(label)
-        label.delegate = self
-
-        if let editor = label.currentEditor() as? NSTextView {
-            editor.allowsUndo = true
-            editor.textColor = .labelColor
-            editor.insertionPointColor = .labelColor
-            editor.drawsBackground = false
-            var attrs = editor.typingAttributes
-            attrs[.foregroundColor] = NSColor.labelColor
-            editor.typingAttributes = attrs
-            let fullText = label.stringValue
-            let isDir = model?.isNavigable ?? false
-            let ext = (fullText as NSString).pathExtension
-            let length: Int
-            if isDir || ext.isEmpty || fullText.hasPrefix(".") {
-                length = fullText.count
-            } else {
-                length = (fullText as NSString).deletingPathExtension.count
+            if let collectionView = self.view.superview as? NSCollectionView {
+                self.view.window?.makeFirstResponder(collectionView)
             }
-            editor.selectedRange = NSRange(location: 0, length: length)
+            NSCursor.arrow.set()
+
+            let orig = self.model?.name ?? ""
+            if commit {
+                let newName = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if newName.isEmpty || newName == orig {
+                    self.label.stringValue = orig
+                } else {
+                    self.label.stringValue = newName
+                    self.onCommitRename?(newName)
+                }
+            } else {
+                self.label.stringValue = orig
+                self.onCancelRename?()
+            }
         }
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.isStartingEditing = false
-            self.label.textColor = .labelColor
-            if let editor = self.label.currentEditor() as? NSTextView {
-                editor.allowsUndo = true
-                editor.textColor = .labelColor
-                editor.insertionPointColor = .labelColor
-                var attrs = editor.typingAttributes
-                attrs[.foregroundColor] = NSColor.labelColor
-                editor.typingAttributes = attrs
-            }
+        if let win = view.window {
+            field.beginEditing(in: win)
         }
     }
 
     func endInlineEditing(commit: Bool) {
-        guard isInlineEditing else { return }
-        InlineRenameTracker.markEditingEnded()
-        isInlineEditing = false
-        isStartingEditing = false
-        label.isEditable = false
-        label.isSelectable = false
-        label.drawsBackground = false
-        label.isBordered = false
-        label.layer?.borderWidth = 0
-        label.lineBreakMode = .byTruncatingMiddle
-        label.cell?.isScrollable = false
-        label.delegate = nil
-        updateSelectionVisuals()
-
-        let original = model?.name ?? ""
+        guard let field = renameField else { return }
         if commit {
-            let newName = label.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if newName.isEmpty || newName == original {
-                label.stringValue = original
-            } else {
-                onCommitRename?(newName)
-            }
+            field.commitAndClose()
         } else {
-            label.stringValue = original
-            onCancelRename?()
+            field.cancelAndClose()
         }
-        if let collectionView = view.superview as? NSCollectionView {
-            view.window?.makeFirstResponder(collectionView)
-        }
-    }
-
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            endInlineEditing(commit: true)
-            return true
-        } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-            endInlineEditing(commit: false)
-            return true
-        } else if commandSelector == Selector(("undo:")) {
-            textView.undoManager?.undo()
-            return true
-        } else if commandSelector == Selector(("redo:")) {
-            textView.undoManager?.redo()
-            return true
-        }
-        return false
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        guard !isStartingEditing, isInlineEditing else { return }
-        endInlineEditing(commit: true)
     }
 
     func configure(with item: FileItem, isPaneActive: Bool) {

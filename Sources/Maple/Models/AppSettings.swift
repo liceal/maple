@@ -127,7 +127,17 @@ struct ServerEntry: Codable, Equatable {
     }
 
     var url: URL? {
-        URL(string: normalizedURLString)
+        let raw = normalizedURLString
+        if let u = URL(string: raw), u.host != nil {
+            return u
+        }
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.insert(charactersIn: "/:#[]@!$&'()*+,;=%")
+        if let encoded = raw.addingPercentEncoding(withAllowedCharacters: allowed),
+           let u = URL(string: encoded), u.host != nil {
+            return u
+        }
+        return nil
     }
 
     var hostDisplay: String {
@@ -743,10 +753,21 @@ enum AppSettings {
     }
 
     @discardableResult
-    static func addOrUpdateServer(name: String, urlString: String) -> ServerEntry {
+    static func addOrUpdateServer(id editingId: String? = nil, name: String, urlString: String) -> ServerEntry {
         var list = savedServers
-        let entry = ServerEntry(name: name, urlString: urlString)
+        let entry = ServerEntry(id: editingId ?? UUID().uuidString, name: name, urlString: urlString)
         let norm = entry.normalizedURLString.lowercased()
+
+        if let editingId, let idx = list.firstIndex(where: { $0.id == editingId }) {
+            list[idx].name = name
+            list[idx].urlString = entry.normalizedURLString
+            for i in list.indices.reversed() where i != idx && list[i].normalizedURLString.lowercased() == norm {
+                list.remove(at: i)
+            }
+            savedServers = list
+            return list.first(where: { $0.id == editingId }) ?? entry
+        }
+
         if let idx = list.firstIndex(where: { $0.normalizedURLString.lowercased() == norm }) {
             if !name.isEmpty {
                 list[idx].name = name

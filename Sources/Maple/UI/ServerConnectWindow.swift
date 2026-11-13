@@ -1,9 +1,10 @@
 import AppKit
 import Network
+import NetFS
 
 /// “连接服务器”窗口控制器（⌘K）：支持输入远程地址（SMB / AFP / NFS / FTP / WebDAV / VNC）、
 /// 测试连接连通性与延迟、管理常用服务器收藏列表，并在挂载成功后自动在当前窗格打开对应网络卷。
-final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
+final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
 
     static let shared = ServerConnectWindowController()
 
@@ -27,17 +28,21 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
     private var activeTestConnection: NWConnection?
     private var activeTestTimeout: DispatchWorkItem?
 
-    /// 等待挂载完成后自动跳转的主机名（小写）。
-    private var pendingMountHost: String?
+    /// 当前正在编辑的服务器条目 ID（从侧栏右键「编辑服务器连接…」或单击列表行进入）。
+    private var editingEntryId: String?
 
-    private let protocols: [(title: String, prefix: String)] = [
-        ("SMB (Windows / NAS 共享)", "smb://"),
-        ("AFP (Apple 文件共享)", "afp://"),
-        ("NFS (Unix 网络文件系统)", "nfs://"),
-        ("FTP / FTPS", "ftp://"),
-        ("WebDAV (HTTP/HTTPS)", "http://"),
-        ("VNC (远程屏幕共享)", "vnc://"),
-        ("SSH / SFTP", "ssh://")
+    /// 等待挂载完成后自动跳转的目标 URL 与发起时间。
+    private var pendingMountURL: URL?
+    private var pendingMountTimestamp: TimeInterval = 0
+
+    private let protocols: [(title: String, prefix: String, aliases: [String])] = [
+        ("SMB (Windows / NAS 共享)", "smb://", ["smb://", "cifs://"]),
+        ("AFP (Apple 文件共享)", "afp://", ["afp://"]),
+        ("NFS (Unix 网络文件系统)", "nfs://", ["nfs://"]),
+        ("FTP / FTPS", "ftp://", ["ftp://", "ftps://"]),
+        ("WebDAV (HTTP/HTTPS)", "http://", ["http://", "https://", "webdav://", "webdavs://"]),
+        ("VNC (远程屏幕共享)", "vnc://", ["vnc://"]),
+        ("SSH / SFTP (终端连接)", "ssh://", ["ssh://", "sftp://"])
     ]
 
     override init() {
@@ -57,15 +62,27 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
         guard let window else { return }
 
         cancelActiveTest()
+        editingEntryId = initialEntry?.id
         tableView.reloadData()
         if let entry = initialEntry {
             addressField.stringValue = entry.urlString
             nameField.stringValue = entry.name
             syncProtocolFromAddress()
-        } else if addressField.stringValue.isEmpty {
-            addressField.stringValue = "smb://"
-            nameField.stringValue = ""
-            protocolPopup.selectItem(at: 0)
+            if let idx = AppSettings.savedServers.firstIndex(where: { $0.id == entry.id }) {
+                tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+                tableView.scrollRowToVisible(idx)
+            } else {
+                tableView.deselectAll(nil)
+            }
+        } else {
+            tableView.deselectAll(nil)
+            if addressField.stringValue.isEmpty {
+                addressField.stringValue = "smb://"
+                nameField.stringValue = ""
+                protocolPopup.selectItem(at: 0)
+            } else {
+                syncProtocolFromAddress()
+            }
         }
         setStatus("", color: .secondaryLabelColor, spinning: false)
         updateButtons()
@@ -80,7 +97,8 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
         NSApp.activate(ignoringOtherApps: true)
         window.makeFirstResponder(addressField)
         if let editor = addressField.currentEditor() {
-            editor.selectedRange = NSRange(location: addressField.stringValue.count, length: 0)
+            let len = (addressField.stringValue as NSString).length
+            editor.selectedRange = NSRange(location: len, length: 0)
         }
     }
 
@@ -130,6 +148,7 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
         addressField.translatesAutoresizingMaskIntoConstraints = false
         addressField.placeholderString = "smb://192.168.1.100/share"
         addressField.font = .systemFont(ofSize: 12.5)
+        addressField.delegate = self
         addressField.target = self
         addressField.action = #selector(connectClicked)
         content.addSubview(addrLabel)
@@ -459,20 +478,33 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
 
     // MARK: - 交互逻辑
 
+    func controlTextDidChange(_ obj: Notification) {
+        if obj.object as? NSTextField === addressField {
+            syncProtocolFromAddress()
+        }
+    }
+
     @objc private func protocolChanged() {
         let idx = protocolPopup.indexOfSelectedItem
         guard protocols.indices.contains(idx) else { return }
-        let newPrefix = protocols[idx].prefix
+        let selected = protocols[idx]
         var current = addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = current.lowercased()
+        // 如果当前地址本身已经属于该协议族（例如 https:// 属于 WebDAV，ftps:// 属于 FTP），保留原前缀不强行覆盖
+        if selected.aliases.contains(where: { lower.hasPrefix($0) }) {
+            return
+        }
         if let range = current.range(of: "://") {
             current = String(current[range.upperBound...])
         }
-        addressField.stringValue = newPrefix + current
+        addressField.stringValue = selected.prefix + current
     }
 
     private func syncProtocolFromAddress() {
-        let lower = addressField.stringValue.lowercased()
-        if let idx = protocols.firstIndex(where: { lower.hasPrefix($0.prefix) }) {
+        let lower = addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let idx = protocols.firstIndex(where: { item in
+            item.aliases.contains(where: { lower.hasPrefix($0) })
+        }) {
             protocolPopup.selectItem(at: idx)
         }
     }
@@ -485,8 +517,12 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
             return
         }
         let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        AppSettings.addOrUpdateServer(name: name, urlString: rawAddr)
+        let saved = AppSettings.addOrUpdateServer(id: editingEntryId, name: name, urlString: rawAddr)
+        editingEntryId = saved.id
         tableView.reloadData()
+        if let idx = AppSettings.savedServers.firstIndex(where: { $0.id == saved.id }) {
+            tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+        }
         updateButtons()
         onServersChanged?()
         setStatus("✓ 已保存到左侧“服务器”列表", color: .systemGreen, spinning: false)
@@ -496,7 +532,11 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
         let row = tableView.selectedRow
         let list = AppSettings.savedServers
         guard list.indices.contains(row) else { return }
-        AppSettings.removeServer(id: list[row].id)
+        let removedId = list[row].id
+        if editingEntryId == removedId {
+            editingEntryId = nil
+        }
+        AppSettings.removeServer(id: removedId)
         tableView.reloadData()
         updateButtons()
         onServersChanged?()
@@ -518,8 +558,12 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
         let row = tableView.selectedRow
         let list = AppSettings.savedServers
         updateButtons()
-        guard list.indices.contains(row) else { return }
+        guard list.indices.contains(row) else {
+            editingEntryId = nil
+            return
+        }
         let entry = list[row]
+        editingEntryId = entry.id
         addressField.stringValue = entry.urlString
         nameField.stringValue = entry.name
         syncProtocolFromAddress()
@@ -531,6 +575,7 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
         let list = AppSettings.savedServers
         guard list.indices.contains(row) else { return }
         let entry = list[row]
+        editingEntryId = entry.id
         addressField.stringValue = entry.urlString
         nameField.stringValue = entry.name
         connect(entry: entry)
@@ -545,7 +590,8 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
             return
         }
         let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let saved = AppSettings.addOrUpdateServer(name: name, urlString: rawAddr)
+        let saved = AppSettings.addOrUpdateServer(id: editingEntryId, name: name, urlString: rawAddr)
+        editingEntryId = saved.id
         tableView.reloadData()
         onServersChanged?()
         connect(entry: saved)
@@ -568,6 +614,16 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
             return
         }
 
+        let scheme = (remoteURL.scheme ?? "smb").lowercased()
+
+        // VNC（远程屏幕共享）与 SSH/SFTP（终端连接）不属于磁盘卷挂载，直接交由系统对应应用打开
+        if scheme == "vnc" || scheme == "ssh" || scheme == "sftp" {
+            pendingMountURL = nil
+            NSWorkspace.shared.open(remoteURL)
+            window?.orderOut(nil)
+            return
+        }
+
         // 1. 检查是否已有对应的已挂载网络卷，若有则直接在当前焦点窗格打开该挂载目录
         if let mountedURL = Self.findMountedVolume(matching: remoteURL) {
             window?.orderOut(nil)
@@ -575,11 +631,48 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
             return
         }
 
-        // 2. 记录待挂载的主机名，调用系统连接流程（弹出系统凭据认证并挂载到 /Volumes）
-        pendingMountHost = remoteURL.host?.lowercased()
-        setStatus("正在唤起系统连接…", color: .secondaryLabelColor, spinning: false)
-        NSWorkspace.shared.open(remoteURL)
+        // 2. 针对 WebDAV (http/https/webdav/webdavs) 及各类文件共享协议：
+        // 若对 http/https 直接调 NSWorkspace.shared.open 会打开浏览器而非挂载磁盘，
+        // 因此统一优先使用 macOS NetFS 框架挂载，挂载成功后直接打开挂载目录。
+        var mountTargetURL = remoteURL
+        if scheme == "webdav", var comp = URLComponents(url: remoteURL, resolvingAgainstBaseURL: false) {
+            comp.scheme = "http"
+            if let u = comp.url { mountTargetURL = u }
+        } else if scheme == "webdavs", var comp = URLComponents(url: remoteURL, resolvingAgainstBaseURL: false) {
+            comp.scheme = "https"
+            if let u = comp.url { mountTargetURL = u }
+        }
+
+        pendingMountURL = mountTargetURL
+        pendingMountTimestamp = ProcessInfo.processInfo.systemUptime
+        setStatus("正在唤起系统连接…", color: .secondaryLabelColor, spinning: true)
         window?.orderOut(nil)
+
+        let isWebDAV = (scheme == "http" || scheme == "https" || scheme == "webdav" || scheme == "webdavs")
+        if isWebDAV {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                var mountpoints: Unmanaged<CFArray>?
+                let status = NetFSMountURLSync(mountTargetURL as CFURL, nil, nil, nil, nil, nil, &mountpoints)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.setStatus("", color: .secondaryLabelColor, spinning: false)
+                    if status == 0,
+                       let array = mountpoints?.takeRetainedValue() as? [String],
+                       let firstPath = array.first {
+                        self.pendingMountURL = nil
+                        let mountedURL = URL(fileURLWithPath: firstPath)
+                        self.onServersChanged?()
+                        self.onOpenDirectory?(mountedURL)
+                    } else if let mountedURL = Self.findMountedVolume(matching: mountTargetURL) {
+                        self.pendingMountURL = nil
+                        self.onServersChanged?()
+                        self.onOpenDirectory?(mountedURL)
+                    }
+                }
+            }
+        } else {
+            NSWorkspace.shared.open(mountTargetURL)
+        }
     }
 
     @objc private func volumeDidMount(_ note: Notification) {
@@ -587,15 +680,21 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
         guard let mountedURL = note.userInfo?["NSWorkspaceVolumeURLKey"] as? URL else {
             return
         }
-        if let pending = pendingMountHost {
-            let keys: Set<URLResourceKey> = [.volumeURLForRemountingKey]
-            if let remountURL = (try? mountedURL.resourceValues(forKeys: keys))?.volumeURLForRemounting,
-               remountURL.host?.lowercased() == pending {
-                pendingMountHost = nil
-                onOpenDirectory?(mountedURL)
-                return
-            }
-            pendingMountHost = nil
+        guard let pendingURL = pendingMountURL else { return }
+        // 超时 60 秒后不再自动劫持跳转
+        if ProcessInfo.processInfo.systemUptime - pendingMountTimestamp > 60 {
+            pendingMountURL = nil
+            return
+        }
+        let keys: Set<URLResourceKey> = [.volumeIsLocalKey, .volumeURLForRemountingKey]
+        guard let vals = try? mountedURL.resourceValues(forKeys: keys),
+              vals.volumeIsLocal == false else {
+            return
+        }
+        if let remountURL = vals.volumeURLForRemounting,
+           let pendingHost = pendingURL.host?.lowercased(),
+           remountURL.host?.lowercased() == pendingHost {
+            pendingMountURL = nil
             onOpenDirectory?(mountedURL)
         }
     }
@@ -603,7 +702,9 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
     /// 查找当前已挂载的网络卷中是否匹配给定的远程 URL。
     static func findMountedVolume(matching remoteURL: URL) -> URL? {
         guard let targetHost = remoteURL.host?.lowercased(), !targetHost.isEmpty else { return nil }
-        let targetPath = remoteURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+        let rawTargetPath = (remoteURL.path.removingPercentEncoding ?? remoteURL.path)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
 
         let keys: [URLResourceKey] = [.volumeIsLocalKey, .volumeURLForRemountingKey, .volumeNameKey]
         let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
@@ -612,16 +713,34 @@ final class ServerConnectWindowController: NSObject, NSWindowDelegate, NSTableVi
         for vol in volumes {
             guard let vals = try? vol.resourceValues(forKeys: Set(keys)),
                   vals.volumeIsLocal == false else { continue }
-            if let remount = vals.volumeURLForRemounting,
-               remount.host?.lowercased() == targetHost {
-                let remountPath = remount.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
-                if !targetPath.isEmpty && remountPath == targetPath {
+            guard let remount = vals.volumeURLForRemounting,
+                  remount.host?.lowercased() == targetHost else { continue }
+
+            let remountPath = (remount.path.removingPercentEncoding ?? remount.path)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                .lowercased()
+            let volName = (vals.volumeName ?? vol.lastPathComponent).lowercased()
+
+            if !rawTargetPath.isEmpty {
+                // 用户明确指定了共享子路径时，必须共享路径精确匹配（或与首层共享名一致）才视为同一挂载卷，避免同 IP 多共享盘串盘
+                let targetFirstComponent = rawTargetPath.split(separator: "/").first.map(String.init) ?? rawTargetPath
+                let remountFirstComponent = remountPath.split(separator: "/").first.map(String.init) ?? remountPath
+                if remountPath == rawTargetPath || (!remountFirstComponent.isEmpty && remountFirstComponent == targetFirstComponent) {
                     return vol
                 }
-                hostMatchedFallback = vol
+                if remountPath.isEmpty && volName == targetFirstComponent {
+                    return vol
+                }
+            } else {
+                if remountPath.isEmpty {
+                    return vol
+                }
+                if hostMatchedFallback == nil {
+                    hostMatchedFallback = vol
+                }
             }
         }
-        return hostMatchedFallback
+        return rawTargetPath.isEmpty ? hostMatchedFallback : nil
     }
 
     /// 返回当前所有已挂载的远程/网络卷。

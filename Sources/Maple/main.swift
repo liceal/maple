@@ -15,6 +15,30 @@ final class MainWindow: NSWindow {
         case .leftMouseDown, .rightMouseDown:
             if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
             if !isKeyWindow { makeKeyAndOrderFront(nil) }
+            if let field = InlineRenameField.activeField, field.window === self {
+                if !field.containsWindowPoint(event.locationInWindow) {
+                    field.commitAndClose()
+                }
+            }
+        case .leftMouseUp, .rightMouseUp:
+            super.sendEvent(event)
+            if InlineRenameField.activeField == nil {
+                NSCursor.arrow.set()
+            }
+            return
+        case .keyDown:
+            if let field = InlineRenameField.activeField, field.window === self {
+                let hasMarked = (field.currentEditor() as? NSTextView)?.hasMarkedText() ?? false
+                if !hasMarked {
+                    if event.keyCode == 36 || event.keyCode == 76 || event.keyCode == 48 { // Return / Enter / Tab
+                        field.commitAndClose()
+                        return
+                    } else if event.keyCode == 53 { // Escape
+                        field.cancelAndClose()
+                        return
+                    }
+                }
+            }
         default:
             break
         }

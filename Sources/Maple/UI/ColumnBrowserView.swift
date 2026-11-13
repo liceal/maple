@@ -1333,7 +1333,7 @@ class ColumnTableRowView: NSTableRowView {
 
 // MARK: - 单元格
 
-private final class ColumnRowCell: NSTableCellView, NSTextFieldDelegate {
+private final class ColumnRowCell: NSTableCellView {
 
     private let icon = NSImageView()
     private let title = NSTextField(labelWithString: "")
@@ -1342,8 +1342,8 @@ private final class ColumnRowCell: NSTableCellView, NSTextFieldDelegate {
     private var isHiddenItem: Bool = false
     private var currentItem: FileItem?
 
-    private(set) var isInlineEditing: Bool = false
-    private var isStartingEditing = false
+    private var renameField: InlineRenameField?
+    var isInlineEditing: Bool { renameField != nil }
     var onCommitRename: ((String) -> Void)?
     var onCancelRename: (() -> Void)?
 
@@ -1358,6 +1358,8 @@ private final class ColumnRowCell: NSTableCellView, NSTextFieldDelegate {
         icon.imageScaling = .scaleProportionallyDown
         title.font = .systemFont(ofSize: 12.5)
         title.lineBreakMode = .byTruncatingMiddle
+        title.isEditable = false
+        title.isSelectable = false
         chevron.imageScaling = .scaleProportionallyDown
         chevron.contentTintColor = .tertiaryLabelColor
 
@@ -1366,19 +1368,23 @@ private final class ColumnRowCell: NSTableCellView, NSTextFieldDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func viewWillMove(toSuperview newSuperview: NSView?) {
+        if newSuperview == nil, let field = renameField {
+            renameField = nil
+            field.cancelSilently()
+            title.isHidden = false
+        }
+        super.viewWillMove(toSuperview: newSuperview)
+    }
+
     override func prepareForReuse() {
         super.prepareForReuse()
         tagDotsView.setColors([])
         tagDotsView.isHidden = true
-        if isInlineEditing {
-            isInlineEditing = false
-            isStartingEditing = false
-            title.isEditable = false
-            title.isSelectable = false
-            title.drawsBackground = false
-            title.isBordered = false
-            title.layer?.borderWidth = 0
-            title.delegate = nil
+        if let field = renameField {
+            renameField = nil
+            field.cancelSilently()
+            title.isHidden = false
         }
     }
 
@@ -1397,123 +1403,62 @@ private final class ColumnRowCell: NSTableCellView, NSTextFieldDelegate {
     }
 
     func startInlineEditing() {
-        guard !isInlineEditing else { return }
-        isInlineEditing = true
-        isStartingEditing = true
+        guard renameField == nil else { return }
+        let original = currentItem?.name ?? title.stringValue
+        let isDir = currentItem?.isNavigable ?? false
+        let font = title.font ?? .systemFont(ofSize: 12.5)
 
-        title.isEditable = true
-        title.isSelectable = true
-        title.drawsBackground = true
-        title.backgroundColor = .textBackgroundColor
-        title.textColor = .labelColor
-        title.isBordered = true
-        title.lineBreakMode = .byClipping
-        title.cell?.isScrollable = true
-
-        title.wantsLayer = true
-        title.layer?.cornerRadius = 3
-        title.layer?.masksToBounds = true
-        title.layer?.borderWidth = 1
-        title.layer?.borderColor = NSColor.separatorColor.cgColor
-
+        let field = InlineRenameField(text: original, isDirectory: isDir, font: font, alignment: .left)
+        self.renameField = field
+        title.isHidden = true
+        tagDotsView.isHidden = true
+        addSubview(field)
         needsLayout = true
-        window?.makeFirstResponder(title)
-        title.delegate = self
+        layoutSubtreeIfNeeded()
 
-        if let editor = title.currentEditor() as? NSTextView {
-            editor.allowsUndo = true
-            editor.textColor = .labelColor
-            editor.insertionPointColor = .labelColor
-            editor.drawsBackground = false
-            var attrs = editor.typingAttributes
-            attrs[.foregroundColor] = NSColor.labelColor
-            editor.typingAttributes = attrs
-            let fullText = title.stringValue
-            let isDir = currentItem?.isNavigable ?? false
-            let ext = (fullText as NSString).pathExtension
-            let length: Int
-            if isDir || ext.isEmpty || fullText.hasPrefix(".") {
-                length = fullText.count
-            } else {
-                length = (fullText as NSString).deletingPathExtension.count
+        field.onTextChange = { [weak self] _ in
+            self?.needsLayout = true
+            self?.layoutSubtreeIfNeeded()
+        }
+        field.onEndEditing = { [weak self] rawText, commit in
+            guard let self else { return }
+            self.renameField = nil
+            self.title.isHidden = false
+            self.updateColors()
+            self.needsLayout = true
+
+            if let table = self.superview as? NSTableView ?? (self.superview?.superview as? NSTableView) {
+                self.window?.makeFirstResponder(table)
             }
-            editor.selectedRange = NSRange(location: 0, length: length)
+            NSCursor.arrow.set()
+
+            let orig = self.currentItem?.name ?? ""
+            if commit {
+                let newName = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if newName.isEmpty || newName == orig {
+                    self.title.stringValue = orig
+                } else {
+                    self.title.stringValue = newName
+                    self.onCommitRename?(newName)
+                }
+            } else {
+                self.title.stringValue = orig
+                self.onCancelRename?()
+            }
         }
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.isStartingEditing = false
-            self.title.textColor = .labelColor
-            if let editor = self.title.currentEditor() as? NSTextView {
-                editor.allowsUndo = true
-                editor.textColor = .labelColor
-                editor.insertionPointColor = .labelColor
-                var attrs = editor.typingAttributes
-                attrs[.foregroundColor] = NSColor.labelColor
-                editor.typingAttributes = attrs
-            }
+        if let win = window {
+            field.beginEditing(in: win)
         }
     }
 
     func endInlineEditing(commit: Bool) {
-        guard isInlineEditing else { return }
-        InlineRenameTracker.markEditingEnded()
-        isInlineEditing = false
-        isStartingEditing = false
-        title.isEditable = false
-        title.isSelectable = false
-        title.drawsBackground = false
-        title.isBordered = false
-        title.layer?.borderWidth = 0
-        title.lineBreakMode = .byTruncatingMiddle
-        title.cell?.isScrollable = false
-        title.delegate = nil
-        updateColors()
-        needsLayout = true
-
-        let original = currentItem?.name ?? ""
+        guard let field = renameField else { return }
         if commit {
-            let newName = title.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if newName.isEmpty || newName == original {
-                title.stringValue = original
-            } else {
-                onCommitRename?(newName)
-            }
+            field.commitAndClose()
         } else {
-            title.stringValue = original
-            onCancelRename?()
+            field.cancelAndClose()
         }
-        if let table = superview as? NSTableView ?? (superview?.superview as? NSTableView) {
-            window?.makeFirstResponder(table)
-        }
-    }
-
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            endInlineEditing(commit: true)
-            return true
-        } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-            endInlineEditing(commit: false)
-            return true
-        } else if commandSelector == Selector(("undo:")) {
-            textView.undoManager?.undo()
-            return true
-        } else if commandSelector == Selector(("redo:")) {
-            textView.undoManager?.redo()
-            return true
-        }
-        return false
-    }
-
-    func controlTextDidChange(_ obj: Notification) {
-        if isInlineEditing {
-            needsLayout = true
-        }
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        guard !isStartingEditing, isInlineEditing else { return }
-        endInlineEditing(commit: true)
     }
 
     override var backgroundStyle: NSView.BackgroundStyle {
@@ -1523,17 +1468,6 @@ private final class ColumnRowCell: NSTableCellView, NSTextFieldDelegate {
     }
 
     private func updateColors() {
-        if isInlineEditing {
-            title.textColor = .labelColor
-            if let editor = title.currentEditor() as? NSTextView {
-                editor.textColor = .labelColor
-                editor.insertionPointColor = .labelColor
-                var attrs = editor.typingAttributes
-                attrs[.foregroundColor] = NSColor.labelColor
-                editor.typingAttributes = attrs
-            }
-            return
-        }
         if backgroundStyle == .emphasized {
             title.textColor = .white
             chevron.contentTintColor = NSColor.white.withAlphaComponent(0.85)
@@ -1571,18 +1505,20 @@ private final class ColumnRowCell: NSTableCellView, NSTextFieldDelegate {
         // 从而保证普通文件右侧预留出箭头空间，在垂直视觉上与文件夹标签完全对齐
         let tagRightAnchor = cellW - rightMargin - chevronWidth - chevronGap
 
-        let textHeight: CGFloat = isInlineEditing ? 21 : 17
-        let nameX = icon.frame.maxX + 7 - (isInlineEditing ? 3 : 0)
-
-        if isInlineEditing {
+        if let field = renameField {
+            let textHeight: CGFloat = 21
+            let nameX = icon.frame.maxX + 4
             let maxRight = chevron.isHidden ? (cellW - rightMargin) : (chevron.frame.minX - 4)
             let maxAvailableW = max(50, maxRight - nameX)
-            let font = title.font ?? .systemFont(ofSize: 12.5)
-            let textW = (title.stringValue as NSString).size(withAttributes: [.font: font]).width
-            let titleWidth = min(maxAvailableW, max(50, ceil(textW) + 18))
-            title.frame = NSRect(x: nameX, y: (height - textHeight) / 2, width: titleWidth, height: textHeight)
+            let font = field.font ?? .systemFont(ofSize: 12.5)
+            let currentStr = (field.currentEditor() as? NSTextView)?.string ?? field.stringValue
+            let textW = (currentStr as NSString).size(withAttributes: [.font: font]).width
+            let fieldWidth = min(maxAvailableW, max(56, ceil(textW) + 20))
+            field.frame = NSRect(x: nameX, y: round((height - textHeight) / 2), width: fieldWidth, height: textHeight)
             tagDotsView.isHidden = true
         } else {
+            let textHeight: CGFloat = 17
+            let nameX = icon.frame.maxX + 7
             let tagCount = currentItem?.tags.count ?? 0
             if tagCount > 0 {
                 let dotsW = TagDotsView.preferredWidth(count: tagCount)

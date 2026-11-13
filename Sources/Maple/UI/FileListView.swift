@@ -1211,19 +1211,274 @@ extension FileListView: NSOutlineViewDataSource, NSOutlineViewDelegate {
 
 /// 分栏视图与本列表共用的按键/右键菜单转发版本，支持原生文件拖拽、划选多选以及「点击选中后再次点击就地重命名」。
 enum InlineRenameTracker {
-    private static var lastEndEventNumber: Int?
     private static var lastEndUptime: TimeInterval = 0
 
     static func markEditingEnded() {
-        lastEndEventNumber = NSApp.currentEvent?.eventNumber
         lastEndUptime = ProcessInfo.processInfo.systemUptime
     }
 
     static func didEndDuring(event: NSEvent) -> Bool {
-        if let endNum = lastEndEventNumber, endNum == event.eventNumber {
+        return (ProcessInfo.processInfo.systemUptime - lastEndUptime) < 0.15
+    }
+}
+
+/// 专用就地重命名输入框单元格：保持与原展示标签完全一致的文字内边距与垂直居中位置。
+final class InlineRenameFieldCell: NSTextFieldCell {
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        let inset = NSRect(x: rect.origin.x + 2,
+                           y: rect.origin.y + 1,
+                           width: max(0, rect.width - 4),
+                           height: max(0, rect.height - 2))
+        return super.drawingRect(forBounds: inset)
+    }
+
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        return drawingRect(forBounds: rect)
+    }
+
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: drawingRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, event: event)
+    }
+
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, start selStart: Int, length selLength: Int) {
+        super.select(withFrame: drawingRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, start: selStart, length: selLength)
+    }
+}
+
+/// 统一、独立的就地重命名输入框（对齐 macOS 访达交互）：
+/// - 仅在进入重命名时挂载到行/图标中，退出时立即从父视图移除（彻底杜绝 I-beam 竖线光标残留）；
+/// - 优先绑定 delegate，支持回车/小键盘 Enter/Tab 确认、Esc 取消、点击外部自动确认保存；
+/// - 正确处理 UTF-16 文件主名选中范围（排除扩展名，文件夹或点文件全选）。
+final class InlineRenameField: NSTextField, NSTextFieldDelegate {
+    static weak var activeField: InlineRenameField?
+
+    let originalText: String
+    let isDirectory: Bool
+    var onTextChange: ((String) -> Void)?
+    var onEndEditing: ((String, Bool) -> Void)?
+
+    private var didFinish = false
+    private var isStarting = false
+
+    init(text: String, isDirectory: Bool, font: NSFont, alignment: NSTextAlignment = .left) {
+        self.originalText = text
+        self.isDirectory = isDirectory
+        super.init(frame: .zero)
+
+        let customCell = InlineRenameFieldCell(textCell: text)
+        customCell.isEditable = true
+        customCell.isSelectable = true
+        customCell.isBezeled = false
+        customCell.isBordered = false
+        customCell.drawsBackground = true
+        customCell.backgroundColor = .textBackgroundColor
+        customCell.textColor = .labelColor
+        customCell.font = font
+        customCell.alignment = alignment
+        customCell.lineBreakMode = .byClipping
+        customCell.isScrollable = true
+        customCell.wraps = false
+        customCell.usesSingleLineMode = true
+        customCell.focusRingType = .none
+        self.cell = customCell
+
+        self.stringValue = text
+        self.font = font
+        self.alignment = alignment
+        self.isEditable = true
+        self.isSelectable = true
+        self.isBezeled = false
+        self.isBordered = false
+        self.drawsBackground = true
+        self.backgroundColor = .textBackgroundColor
+        self.textColor = .labelColor
+        self.focusRingType = .none
+
+        self.wantsLayer = true
+        self.layer?.cornerRadius = 3.5
+        self.layer?.masksToBounds = true
+        self.layer?.borderWidth = 1.2
+        self.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        self.delegate = self
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .iBeam)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        let inner = cell?.drawingRect(forBounds: bounds) ?? bounds.insetBy(dx: 2, dy: 1)
+        for sub in subviews {
+            sub.frame = inner
+        }
+        if let editor = currentEditor() as? NSTextView {
+            if editor.frame.width < inner.width {
+                editor.frame.size.width = inner.width
+            }
+            editor.textContainer?.containerSize = NSSize(width: max(inner.width, 2000), height: max(18, inner.height))
+        }
+    }
+
+    func containsWindowPoint(_ windowPoint: NSPoint) -> Bool {
+        guard window != nil, superview != nil else { return false }
+        let local = convert(windowPoint, from: nil)
+        return bounds.insetBy(dx: -3, dy: -2).contains(local)
+    }
+
+    static func initialSelectionRange(for text: String, isDirectory: Bool) -> NSRange {
+        let nsText = text as NSString
+        let fullLen = nsText.length
+        guard fullLen > 0 else { return NSRange(location: 0, length: 0) }
+        let ext = nsText.pathExtension
+        if isDirectory || ext.isEmpty || text.hasPrefix(".") {
+            return NSRange(location: 0, length: fullLen)
+        }
+        let stem = nsText.deletingPathExtension as NSString
+        return NSRange(location: 0, length: min(fullLen, max(0, stem.length)))
+    }
+
+    func beginEditing(in window: NSWindow) {
+        if let existing = Self.activeField, existing !== self {
+            existing.commitAndClose()
+        }
+        Self.activeField = self
+        isStarting = true
+        self.delegate = self
+
+        let selRange = Self.initialSelectionRange(for: originalText, isDirectory: isDirectory)
+        window.makeFirstResponder(self)
+
+        if let editor = currentEditor() as? NSTextView {
+            configureEditor(editor, selectionRange: selRange)
+        }
+
+        isStarting = false
+        window.invalidateCursorRects(for: self)
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.didFinish, Self.activeField === self else { return }
+            if let editor = self.currentEditor() as? NSTextView {
+                self.configureEditor(editor, selectionRange: nil)
+            }
+        }
+    }
+
+    private func configureEditor(_ editor: NSTextView, selectionRange: NSRange?) {
+        editor.allowsUndo = true
+        editor.isFieldEditor = true
+        editor.textColor = .labelColor
+        editor.insertionPointColor = .labelColor
+        editor.drawsBackground = true
+        editor.backgroundColor = .textBackgroundColor
+        var attrs = editor.typingAttributes
+        attrs[.foregroundColor] = NSColor.labelColor
+        if let font = self.font {
+            attrs[.font] = font
+        }
+        editor.typingAttributes = attrs
+        if let selectionRange {
+            editor.selectedRange = selectionRange
+        }
+    }
+
+    func commitAndClose() {
+        let latest = (currentEditor() as? NSTextView)?.string ?? stringValue
+        finishEditing(text: latest, commit: true)
+    }
+
+    func cancelAndClose() {
+        finishEditing(text: originalText, commit: false)
+    }
+
+    func cancelSilently() {
+        guard !didFinish else { return }
+        didFinish = true
+        if Self.activeField === self {
+            Self.activeField = nil
+        }
+        InlineRenameTracker.markEditingEnded()
+        let savedWindow = self.window
+        self.onEndEditing = nil
+        self.onTextChange = nil
+        self.delegate = nil
+        if let w = savedWindow, let editor = self.currentEditor(), (w.firstResponder === editor || w.firstResponder === self) {
+            w.makeFirstResponder(nil)
+        }
+        self.removeFromSuperview()
+        if let w = savedWindow, let contentView = w.contentView {
+            w.invalidateCursorRects(for: contentView)
+        }
+        NSCursor.arrow.set()
+    }
+
+    func finishEditing(text: String, commit: Bool) {
+        guard !didFinish else { return }
+        didFinish = true
+        if Self.activeField === self {
+            Self.activeField = nil
+        }
+        InlineRenameTracker.markEditingEnded()
+
+        let savedWindow = self.window
+        let callback = self.onEndEditing
+        self.onEndEditing = nil
+        self.onTextChange = nil
+        self.delegate = nil
+
+        if let w = savedWindow, let editor = self.currentEditor(), (w.firstResponder === editor || w.firstResponder === self) {
+            w.makeFirstResponder(nil)
+        }
+
+        self.removeFromSuperview()
+
+        if let w = savedWindow, let contentView = w.contentView {
+            w.invalidateCursorRects(for: contentView)
+        }
+        NSCursor.arrow.set()
+        DispatchQueue.main.async {
+            if InlineRenameField.activeField == nil {
+                NSCursor.arrow.set()
+            }
+        }
+
+        callback?(text, commit)
+    }
+
+    // MARK: - NSTextFieldDelegate
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard !didFinish else { return }
+        let current = (currentEditor() as? NSTextView)?.string ?? stringValue
+        onTextChange?(current)
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard !isStarting, !didFinish else { return }
+        let latest = (obj.object as? NSTextView)?.string ?? (currentEditor() as? NSTextView)?.string ?? stringValue
+        finishEditing(text: latest, commit: true)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) ||
+           commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) ||
+           commandSelector == #selector(NSResponder.insertTab(_:)) {
+            finishEditing(text: textView.string, commit: true)
+            return true
+        } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            finishEditing(text: originalText, commit: false)
+            return true
+        } else if commandSelector == Selector(("undo:")) {
+            textView.undoManager?.undo()
+            return true
+        } else if commandSelector == Selector(("redo:")) {
+            textView.undoManager?.redo()
             return true
         }
-        return (ProcessInfo.processInfo.systemUptime - lastEndUptime) < 0.08
+        return false
     }
 }
 
@@ -1322,18 +1577,21 @@ final class KeyTableView: NSTableView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self),
+        if let field = InlineRenameField.activeField, field.isDescendant(of: self),
            let superview = self.superview {
-            let ptInEditor = editor.convert(point, from: superview)
-            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
-                return editor
+            let winPoint = superview.convert(point, to: nil)
+            if field.containsWindowPoint(winPoint) {
+                if let editor = field.currentEditor() {
+                    return editor
+                }
+                return field
             }
         }
         return super.hitTest(point)
     }
 
     override func validateProposedFirstResponder(_ responder: NSResponder, for event: NSEvent?) -> Bool {
-        if responder is NSTextView {
+        if responder is NSTextView || responder is InlineRenameField {
             return true
         }
         if let tf = responder as? NSTextField, tf.isEditable {
@@ -1349,17 +1607,14 @@ final class KeyTableView: NSTableView {
         potentialRenameRow = nil
         mouseDownPoint = event.locationInWindow
 
-        let wasEditingBeforeClick: Bool
-        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self) {
-            let ptInEditor = editor.convert(event.locationInWindow, from: nil)
-            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
-                editor.mouseDown(with: event)
+        if let field = InlineRenameField.activeField, field.isDescendant(of: self) {
+            if field.containsWindowPoint(event.locationInWindow) {
+                (field.currentEditor() ?? field).mouseDown(with: event)
                 return
             }
-            wasEditingBeforeClick = true
-        } else {
-            wasEditingBeforeClick = InlineRenameTracker.didEndDuring(event: event)
+            field.commitAndClose()
         }
+        let didEndEditingOnThisClick = InlineRenameTracker.didEndDuring(event: event)
 
         let point = convert(event.locationInWindow, from: nil)
         let row = self.row(at: point)
@@ -1374,7 +1629,7 @@ final class KeyTableView: NSTableView {
         }
 
         window?.makeFirstResponder(self)
-        let didEndEditingOnThisClick = wasEditingBeforeClick || InlineRenameTracker.didEndDuring(event: event)
+        NSCursor.arrow.set()
 
         // 点击空白处：与访达一致清空选中并直接返回，防止触发系统内置划选导致多行意外变灰选中
         guard row >= 0 else {
@@ -1705,18 +1960,21 @@ final class KeyOutlineView: NSOutlineView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self),
+        if let field = InlineRenameField.activeField, field.isDescendant(of: self),
            let superview = self.superview {
-            let ptInEditor = editor.convert(point, from: superview)
-            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
-                return editor
+            let winPoint = superview.convert(point, to: nil)
+            if field.containsWindowPoint(winPoint) {
+                if let editor = field.currentEditor() {
+                    return editor
+                }
+                return field
             }
         }
         return super.hitTest(point)
     }
 
     override func validateProposedFirstResponder(_ responder: NSResponder, for event: NSEvent?) -> Bool {
-        if responder is NSTextView {
+        if responder is NSTextView || responder is InlineRenameField {
             return true
         }
         if let tf = responder as? NSTextField, tf.isEditable {
@@ -1732,17 +1990,14 @@ final class KeyOutlineView: NSOutlineView {
         potentialRenameRow = nil
         mouseDownPoint = event.locationInWindow
 
-        let wasEditingBeforeClick: Bool
-        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self) {
-            let ptInEditor = editor.convert(event.locationInWindow, from: nil)
-            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
-                editor.mouseDown(with: event)
+        if let field = InlineRenameField.activeField, field.isDescendant(of: self) {
+            if field.containsWindowPoint(event.locationInWindow) {
+                (field.currentEditor() ?? field).mouseDown(with: event)
                 return
             }
-            wasEditingBeforeClick = true
-        } else {
-            wasEditingBeforeClick = InlineRenameTracker.didEndDuring(event: event)
+            field.commitAndClose()
         }
+        let didEndEditingOnThisClick = InlineRenameTracker.didEndDuring(event: event)
 
         let point = convert(event.locationInWindow, from: nil)
         let row = self.row(at: point)
@@ -1768,7 +2023,7 @@ final class KeyOutlineView: NSOutlineView {
         }
 
         window?.makeFirstResponder(self)
-        let didEndEditingOnThisClick = wasEditingBeforeClick || InlineRenameTracker.didEndDuring(event: event)
+        NSCursor.arrow.set()
 
         // 点击空白处或分组标题行：不进入系统内置划选循环，防止移动鼠标时多行被意外划选变灰
         guard row >= 0, !isGroup else {
@@ -2082,6 +2337,10 @@ private final class ColumnDividerLayer: NSView {
     /// 只有点在竖线附近才接管鼠标事件，其余穿透给下层视图。
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let owner else { return nil }
+        if let field = InlineRenameField.activeField, let winPoint = superview?.convert(point, to: nil),
+           field.containsWindowPoint(winPoint) {
+            return nil
+        }
         let local = convert(point, from: superview)
         let docX = local.x + owner.scrollOffsetX
         guard owner.divider(at: docX, tolerance: tolerance) != nil else { return nil }
@@ -2090,12 +2349,24 @@ private final class ColumnDividerLayer: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         guard let owner, !isDraggingDivider else { return }
+        if let field = InlineRenameField.activeField, field.window === window,
+           field.containsWindowPoint(event.locationInWindow) {
+            if hoveredDividerTarget != nil {
+                hoveredDividerTarget = nil
+                needsDisplay = true
+            }
+            NSCursor.iBeam.set()
+            return
+        }
         let point = convert(event.locationInWindow, from: nil)
         let docX = point.x + owner.scrollOffsetX
         let hit = owner.divider(at: docX, tolerance: tolerance)?.target
         if hoveredDividerTarget != hit {
             hoveredDividerTarget = hit
             needsDisplay = true
+        }
+        if hit == nil && InlineRenameField.activeField == nil {
+            NSCursor.arrow.set()
         }
     }
 
@@ -2266,7 +2537,7 @@ enum ColumnResizeCursor {
 // MARK: - 行单元格
 
 /// 文件行：图标 + 名称 + 若干属性列（列的组合由用户设置决定）。
-private final class FileRowCell: NSTableCellView, NSTextFieldDelegate {
+private final class FileRowCell: NSTableCellView {
     private let icon = NSImageView()
     private let title = NSTextField(labelWithString: "")
     private let tagDotsView = TagDotsView()
@@ -2277,8 +2548,8 @@ private final class FileRowCell: NSTableCellView, NSTextFieldDelegate {
     /// 当前显示的文件（补建列标签时要按它填值）。
     private var item: FileItem?
 
-    private(set) var isInlineEditing: Bool = false
-    private var isStartingEditing = false
+    private var renameField: InlineRenameField?
+    var isInlineEditing: Bool { renameField != nil }
     var onCommitRename: ((String) -> Void)?
     var onCancelRename: (() -> Void)?
 
@@ -2295,25 +2566,31 @@ private final class FileRowCell: NSTableCellView, NSTextFieldDelegate {
 
         title.font = .systemFont(ofSize: 12.5)
         title.lineBreakMode = .byTruncatingMiddle
+        title.isEditable = false
+        title.isSelectable = false
 
         for field in [icon, title, tagDotsView] as [NSView] { addSubview(field) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func viewWillMove(toSuperview newSuperview: NSView?) {
+        if newSuperview == nil, let field = renameField {
+            renameField = nil
+            field.cancelSilently()
+            title.isHidden = false
+        }
+        super.viewWillMove(toSuperview: newSuperview)
+    }
+
     override func prepareForReuse() {
         super.prepareForReuse()
         tagDotsView.setColors([])
         tagDotsView.isHidden = true
-        if isInlineEditing {
-            isInlineEditing = false
-            isStartingEditing = false
-            title.isEditable = false
-            title.isSelectable = false
-            title.drawsBackground = false
-            title.isBordered = false
-            title.layer?.borderWidth = 0
-            title.delegate = nil
+        if let field = renameField {
+            renameField = nil
+            field.cancelSilently()
+            title.isHidden = false
         }
     }
 
@@ -2333,123 +2610,51 @@ private final class FileRowCell: NSTableCellView, NSTextFieldDelegate {
     }
 
     func startInlineEditing() {
-        guard !isInlineEditing else { return }
-        isInlineEditing = true
-        isStartingEditing = true
+        guard renameField == nil, let window else { return }
+        let currentName = item?.name ?? title.stringValue
+        let isDir = item?.isNavigable ?? false
 
-        title.isEditable = true
-        title.isSelectable = true
-        title.drawsBackground = true
-        title.backgroundColor = .textBackgroundColor
-        title.textColor = .labelColor
-        title.isBordered = true
-        title.lineBreakMode = .byClipping
-        title.cell?.isScrollable = true
-
-        title.wantsLayer = true
-        title.layer?.cornerRadius = 3
-        title.layer?.masksToBounds = true
-        title.layer?.borderWidth = 1
-        title.layer?.borderColor = NSColor.separatorColor.cgColor
-
+        let field = InlineRenameField(
+            text: currentName,
+            isDirectory: isDir,
+            font: title.font ?? .systemFont(ofSize: 12.5),
+            alignment: .left
+        )
+        self.renameField = field
+        title.isHidden = true
+        tagDotsView.isHidden = true
+        addSubview(field)
         updateFrames()
-        window?.makeFirstResponder(title)
-        title.delegate = self
 
-        if let editor = title.currentEditor() as? NSTextView {
-            editor.allowsUndo = true
-            editor.textColor = .labelColor
-            editor.insertionPointColor = .labelColor
-            editor.drawsBackground = false
-            var attrs = editor.typingAttributes
-            attrs[.foregroundColor] = NSColor.labelColor
-            editor.typingAttributes = attrs
-            let fullText = title.stringValue
-            let isDir = item?.isNavigable ?? false
-            let ext = (fullText as NSString).pathExtension
-            let length: Int
-            if isDir || ext.isEmpty || fullText.hasPrefix(".") {
-                length = fullText.count
-            } else {
-                length = (fullText as NSString).deletingPathExtension.count
-            }
-            editor.selectedRange = NSRange(location: 0, length: length)
+        field.onTextChange = { [weak self] _ in
+            self?.updateFrames()
         }
-
-        DispatchQueue.main.async { [weak self] in
+        field.onEndEditing = { [weak self] finalText, shouldCommit in
             guard let self else { return }
-            self.isStartingEditing = false
-            self.title.textColor = .labelColor
-            if let editor = self.title.currentEditor() as? NSTextView {
-                editor.allowsUndo = true
-                editor.textColor = .labelColor
-                editor.insertionPointColor = .labelColor
-                var attrs = editor.typingAttributes
-                attrs[.foregroundColor] = NSColor.labelColor
-                editor.typingAttributes = attrs
+            self.renameField = nil
+            self.title.isHidden = false
+            self.updateColors()
+            self.updateFrames()
+            if let doc = self.owner?.listScrollView.documentView {
+                self.window?.makeFirstResponder(doc)
             }
-        }
-    }
+            NSCursor.arrow.set()
 
-    func endInlineEditing(commit: Bool) {
-        guard isInlineEditing else { return }
-        InlineRenameTracker.markEditingEnded()
-        isInlineEditing = false
-        isStartingEditing = false
-        title.isEditable = false
-        title.isSelectable = false
-        title.drawsBackground = false
-        title.isBordered = false
-        title.layer?.borderWidth = 0
-        title.lineBreakMode = .byTruncatingMiddle
-        title.cell?.isScrollable = false
-        title.delegate = nil
-        updateColors()
-        updateFrames()
-
-        let original = item?.name ?? ""
-        if commit {
-            let newName = title.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if newName.isEmpty || newName == original {
-                title.stringValue = original
+            let original = self.item?.name ?? ""
+            if shouldCommit {
+                let newName = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if newName.isEmpty || newName == original {
+                    self.title.stringValue = original
+                } else {
+                    self.onCommitRename?(newName)
+                }
             } else {
-                onCommitRename?(newName)
+                self.title.stringValue = original
+                self.onCancelRename?()
             }
-        } else {
-            title.stringValue = original
-            onCancelRename?()
         }
-        if let doc = owner?.listScrollView.documentView {
-            window?.makeFirstResponder(doc)
-        }
-    }
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            endInlineEditing(commit: true)
-            return true
-        } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-            endInlineEditing(commit: false)
-            return true
-        } else if commandSelector == Selector(("undo:")) {
-            textView.undoManager?.undo()
-            return true
-        } else if commandSelector == Selector(("redo:")) {
-            textView.undoManager?.redo()
-            return true
-        }
-        return false
-    }
-
-    func controlTextDidChange(_ obj: Notification) {
-        if isInlineEditing {
-            updateFrames()
-        }
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        guard !isStartingEditing, isInlineEditing else { return }
-        endInlineEditing(commit: true)
+        field.beginEditing(in: window)
     }
 
     /// 按列表当前的列布局摆放图标、文件名与各列内容。
@@ -2474,19 +2679,25 @@ private final class FileRowCell: NSTableCellView, NSTextFieldDelegate {
                             y: (rowHeight - iconSize) / 2,
                             width: iconSize, height: iconSize)
         let nameRight = layout.nameRect.maxX - 8
-        let textHeight: CGFloat = isInlineEditing ? max(21, iconSize + 4) : 17
-        let nameX = nameTextX - (isInlineEditing ? 3 : 0)
+        let textHeight: CGFloat = 17
+        let nameX = nameTextX
         let localNameRight = nameRight - dx
-        let maxAvailableWidth = max(50, localNameRight - nameX + (isInlineEditing ? 3 : 0))
+        let maxAvailableWidth = max(54, localNameRight - nameX + 2)
 
-        let titleWidth: CGFloat
-        if isInlineEditing {
-            let font = title.font ?? .systemFont(ofSize: 12.5)
-            let textW = (title.stringValue as NSString).size(withAttributes: [.font: font]).width
-            // 访达同款：紧凑自适应文本宽度 + 内边距光标缓冲，且不超过列右边界
-            titleWidth = min(maxAvailableWidth, max(50, ceil(textW) + 18))
+        if let field = renameField {
+            let font = field.font ?? .systemFont(ofSize: 12.5)
+            let currentStr = (field.currentEditor() as? NSTextView)?.string ?? field.stringValue
+            let textW = (currentStr as NSString).size(withAttributes: [.font: font]).width
+            let editWidth = min(maxAvailableWidth, max(54, ceil(textW) + 20))
+            let editHeight: CGFloat = max(19, iconSize + 3)
+            field.frame = NSRect(x: nameX - 2,
+                                 y: (rowHeight - editHeight) / 2,
+                                 width: editWidth,
+                                 height: editHeight)
             tagDotsView.isHidden = true
+            title.frame = NSRect(x: nameX, y: (rowHeight - textHeight) / 2, width: editWidth, height: textHeight)
         } else {
+            let titleWidth: CGFloat
             let tagCount = item?.tags.count ?? 0
             if tagCount > 0 {
                 let dotsW = TagDotsView.preferredWidth(count: tagCount)
@@ -2501,12 +2712,11 @@ private final class FileRowCell: NSTableCellView, NSTextFieldDelegate {
                 titleWidth = max(0, localNameRight - nameX)
                 tagDotsView.isHidden = true
             }
+            title.frame = NSRect(x: nameX,
+                                 y: (rowHeight - textHeight) / 2,
+                                 width: titleWidth,
+                                 height: textHeight)
         }
-
-        title.frame = NSRect(x: nameX,
-                             y: (rowHeight - textHeight) / 2,
-                             width: titleWidth,
-                             height: textHeight)
 
         let shown = Set(layout.entries.map { $0.column })
         for entry in layout.entries {
@@ -2555,17 +2765,6 @@ private final class FileRowCell: NSTableCellView, NSTextFieldDelegate {
     }
 
     private func updateColors() {
-        if isInlineEditing {
-            title.textColor = .labelColor
-            if let editor = title.currentEditor() as? NSTextView {
-                editor.textColor = .labelColor
-                editor.insertionPointColor = .labelColor
-                var attrs = editor.typingAttributes
-                attrs[.foregroundColor] = NSColor.labelColor
-                editor.typingAttributes = attrs
-            }
-            return
-        }
         if backgroundStyle == .emphasized {
             title.textColor = .white
             for (_, label) in valueLabels {
