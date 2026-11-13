@@ -900,7 +900,7 @@ final class BrowserColumn: NSView, NSTableViewDataSource, NSTableViewDelegate {
             if let cell = self.table.view(atColumn: 0, row: row, makeIfNecessary: false) as? ColumnRowCell {
                 return cell.isPointInName(point, in: self.table)
             }
-            return true
+            return false
         }
         table.registerForDraggedTypes([.fileURL])
         table.urlsForRows = { [weak self] rows in
@@ -1385,12 +1385,15 @@ private final class ColumnRowCell: NSTableCellView, NSTextFieldDelegate {
     // MARK: - 就地重命名
 
     func isPointInName(_ pointInTable: NSPoint, in table: NSTableView) -> Bool {
+        guard !isInlineEditing else { return false }
         let local = convert(pointInTable, from: table)
         guard local.y >= 0 && local.y <= bounds.height else { return false }
-        if local.x < 25 { return false }
-        if !chevron.isHidden && local.x > chevron.frame.minX - 4 { return false }
-        if !tagDotsView.isHidden && local.x > tagDotsView.frame.minX - 4 { return false }
-        return true
+        let font = title.font ?? .systemFont(ofSize: 12.5)
+        let rawTextW = ceil((title.stringValue as NSString).size(withAttributes: [.font: font]).width) + 4
+        let actualTextW = title.frame.width > 0 ? min(title.frame.width, rawTextW) : rawTextW
+        let textMinX = title.frame.minX
+        let textMaxX = textMinX + actualTextW
+        return local.x >= textMinX && local.x <= textMaxX
     }
 
     func startInlineEditing() {
@@ -1454,6 +1457,7 @@ private final class ColumnRowCell: NSTableCellView, NSTextFieldDelegate {
 
     func endInlineEditing(commit: Bool) {
         guard isInlineEditing else { return }
+        InlineRenameTracker.markEditingEnded()
         isInlineEditing = false
         isStartingEditing = false
         title.isEditable = false

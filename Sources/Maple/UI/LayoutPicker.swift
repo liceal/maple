@@ -38,8 +38,9 @@ final class LayoutPickerController: NSObject {
         // 切换到其它应用时面板要跟着隐藏，不能继续浮在屏幕最前面
         panel.hidesOnDeactivate = true
         panel.collectionBehavior = [.transient, .ignoresCycle]
+        panel.becomesKeyOnlyIfNeeded = true
 
-        let effect = NSVisualEffectView()
+        let effect = LayoutVisualEffectView()
         effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
@@ -95,11 +96,10 @@ final class LayoutPickerController: NSObject {
                 return event
             }
             if event.window === self.panel { return event }
-            // 用点击落点判断是否点在按钮上：点在按钮上时吞掉这次点击，
-            // 只关闭面板（否则按钮动作会重新打开，表现为关不掉）。
             let screenPoint: NSPoint = event.window.map {
                 $0.convertPoint(toScreen: event.locationInWindow)
             } ?? NSEvent.mouseLocation
+            if self.panel.frame.contains(screenPoint) { return event }
             let insideAnchor = self.anchorScreenRect.contains(screenPoint)
             self.close()
             return insideAnchor ? nil : event
@@ -130,6 +130,12 @@ final class LayoutPickerController: NSObject {
     }
 }
 
+// MARK: - 视觉容器
+
+private final class LayoutVisualEffectView: NSVisualEffectView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 // MARK: - 图标条
 
 /// 纯绘制的竖向图标条：12 个布局，当前项强调色底 + 白色勾选。
@@ -144,6 +150,7 @@ private final class LayoutListView: NSView {
     private var hoverArea: NSTrackingArea?
 
     override var isFlipped: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     init(selected: LayoutMode) {
         self.selected = selected

@@ -8,7 +8,7 @@ public final class UpdateChecker: NSObject {
         if let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !ver.isEmpty {
             return ver
         }
-        return "1.0.7"
+        return "1.0.8"
     }
 
     private let repoOwner = "liceal"

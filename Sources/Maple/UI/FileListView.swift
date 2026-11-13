@@ -39,17 +39,22 @@ final class FileListView: NSView {
     static var headerNameX: CGFloat { 12 }
     /// 名称列至少要留出的宽度
     static let minNameWidth: CGFloat = 108
-    /// 名称列最多能占的宽度
-    static let maxNameWidth: CGFloat = 320
+    /// 名称列最大宽度无限制
+    static let maxNameWidth: CGFloat = 10000
+    /// 最右侧列分隔线右侧预留的拖拽缓冲留白
+    static let trailingBreathingSpace: CGFloat = 28
 
-    /// 表头与列表行共用的列布局：名称列在左占固定宽度，其余列向右依次排开，
-    /// 最后一列（弹性列）填满到右边缘。
+    /// 表头与列表行共用的列布局：名称列在左，其余列向右依次按各自独立宽度排开，
+    /// 超出可视宽度时支持水平滚动。
     struct ColumnLayout {
         var nameRect: NSRect = .zero
         var entries: [(column: ListColumn, rect: NSRect)] = []
+        var totalWidth: CGFloat {
+            entries.last?.rect.maxX ?? nameRect.maxX
+        }
     }
 
-    /// 某一列在当前窗口宽度下允许的宽度范围。
+    /// 某一列允许的宽度范围（仅限制最小宽度，最大宽度无上限）。
     struct WidthRange {
         let min: CGFloat
         let max: CGFloat
@@ -61,10 +66,11 @@ final class FileListView: NSView {
         }
     }
 
-    /// 一条可拖动的列分隔线：位置 x，以及它**左侧**被调整宽度的列。
+    /// 一条可拖动的列分隔线：文档坐标位置 x，以及它**左侧**被调整宽度的列。
     struct ColumnDivider {
         let target: ResizableColumn
         let x: CGFloat
+        let isRightmost: Bool
     }
 
     /// 拖拽过程中的临时列宽：先在内存里改，松手才落盘（避免每个鼠标事件都写 UserDefaults）。
@@ -99,87 +105,49 @@ final class FileListView: NSView {
         return ListColumn.allCases.filter { enabled.contains($0.rawValue) }
     }
 
-    /// 可见的数据列：宽度不够时从最右边开始逐列隐藏（和访达一致）。
-    /// 最后一列是弹性列（填满右侧空白），不占固定宽度，故求和时排除它。
+    /// 可见的数据列：完整展示用户勾选的所有列，不再因窗口变窄而隐藏列（过长时可左右滑动）。
     private func visibleColumns() -> [ListColumn] {
-        fittingColumns(Self.selectedColumns)
+        Self.selectedColumns
     }
 
-    private func fittingColumns(_ columns: [ListColumn]) -> [ListColumn] {
-        let available = bounds.width - Self.trailingInset
-        var result = columns
-        while !result.isEmpty {
-            let fixedSum = result.dropLast().reduce(CGFloat(0)) { $0 + width(of: $1) }
-            // 弹性列至少要留出最小宽度，否则总宽度会溢出到窗口外
-            let flexMin = result.last?.minWidth ?? 0
-            if nameWidth + fixedSum + flexMin <= available { break }
-            result.removeLast()
-        }
-        return result
-    }
-
-    /// 计算列布局（左对齐）：名称列在左占固定宽度，各数据列向右依次排开，
-    /// 最后一列（弹性列）填满到右边缘，保证右侧不留空白。
-    private func makeLayout(totalWidth: CGFloat, columns: [ListColumn]) -> ColumnLayout {
-        let nameW = nameWidth
+    /// 计算列布局（左对齐）：名称列与各数据列（含最右侧列）均使用各自独立的列宽，
+    /// 调整任意一列（包括最右侧列）都不会影响其他列的宽度。
+    private func makeLayout(columns: [ListColumn]) -> ColumnLayout {
+        let nameW = max(Self.minNameWidth, nameWidth)
         var x = nameW
         var entries: [(column: ListColumn, rect: NSRect)] = []
-        for (index, column) in columns.enumerated() {
-            let columnWidth: CGFloat
-            if index == columns.count - 1 {
-                // 弹性列填满到右边缘
-                columnWidth = max(column.minWidth, totalWidth - Self.trailingInset - x)
-            } else {
-                columnWidth = width(of: column)
-            }
+        for column in columns {
+            let columnWidth = max(column.minWidth, width(of: column))
             entries.append((column, NSRect(x: x, y: 0, width: columnWidth, height: 0)))
             x += columnWidth
         }
-        return ColumnLayout(nameRect: NSRect(x: 0, y: 0, width: max(0, nameW), height: 0),
+        return ColumnLayout(nameRect: NSRect(x: 0, y: 0, width: nameW, height: 0),
                             entries: entries)
     }
 
-    /// 某一列在当前窗口宽度下允许的宽度范围。
-    ///
-    /// 上下限有两层：① 该列自身的最小 / 最大宽（内容可读性）；
-    /// ② 窗口剩余空间——其它列至少要留出各自的最小宽，否则后面的列会被挤出窗口。
+    /// 某一列允许的宽度范围：仅保留最小宽度限制，最大宽度无限制，且不随窗口宽度或其他列变化而受限。
     fileprivate func widthRange(for target: ResizableColumn) -> WidthRange {
-        let columns = visibleColumns()
-        let available = bounds.width - Self.trailingInset
-        // 固定列（最后一列是弹性列，宽度由前面决定，不参与「至少要占多少」的核算）
-        let fixedSum = columns.dropLast().reduce(CGFloat(0)) { $0 + width(of: $1) }
-        // 弹性列的最小宽
-        let flexMin = columns.last?.minWidth ?? 0
-
         switch target {
         case .name:
-            let upper = min(Self.maxNameWidth, available - fixedSum - flexMin)
-            return WidthRange(min: Self.minNameWidth, max: Swift.max(Self.minNameWidth, upper))
+            return WidthRange(min: Self.minNameWidth, max: Self.maxNameWidth)
         case .column(let column):
-            let lower = column.minWidth
-            guard let index = columns.firstIndex(of: column) else {
-                return WidthRange(min: lower, max: column.maxWidth)
-            }
-            let upper: CGFloat
-            if index == columns.count - 1 {
-                // 弹性列：宽度由前面的列决定
-                upper = min(column.maxWidth, available - nameWidth - fixedSum)
-            } else {
-                let others = fixedSum - width(of: column)
-                upper = min(column.maxWidth, available - nameWidth - others - flexMin)
-            }
-            return WidthRange(min: lower, max: Swift.max(lower, upper))
+            return WidthRange(min: column.minWidth, max: column.maxWidth)
         }
     }
 
-    /// 目标列当前的实际宽度（弹性列取布局里填充后的宽度）。
+    /// 目标列当前的实际宽度。
     fileprivate func currentWidth(of target: ResizableColumn) -> CGFloat {
         switch target {
         case .name:
-            return nameWidth
+            return max(Self.minNameWidth, nameWidth)
         case .column(let column):
-            return columnLayout.entries.first { $0.column == column }?.rect.width ?? column.width
+            return columnLayout.entries.first { $0.column == column }?.rect.width ?? max(column.minWidth, width(of: column))
         }
+    }
+
+    /// 当前列表水平滚动偏移量（文档左边缘相对可视区域左边缘的偏移）。
+    fileprivate var scrollOffsetX: CGFloat {
+        scroll.contentView.bounds.origin.x
     }
 
     /// 列表的滚动视图（分隔线层转发滚轮事件用）。
@@ -214,11 +182,31 @@ final class FileListView: NSView {
                 expandable = false
                 return false
             }
-            let names = (try? FileManager.default.contentsOfDirectory(atPath: item.url.path)) ?? []
-            let visible = AppSettings.showHidden ? names : names.filter { !$0.hasPrefix(".") }
-            let result = !visible.isEmpty
+            let result = Self.directoryHasVisibleEntry(atPath: item.url.path, showHidden: AppSettings.showHidden)
             expandable = result
             return result
+        }
+
+        /// 使用底层 POSIX opendir/readdir 探测目录是否包含至少一个可见子项，零数组分配，遇到首个有效项立即返回。
+        private static func directoryHasVisibleEntry(atPath path: String, showHidden: Bool) -> Bool {
+            guard let dir = opendir(path) else { return false }
+            defer { closedir(dir) }
+            while let entry = readdir(dir) {
+                let nameLen = Int(entry.pointee.d_namlen)
+                guard nameLen > 0 else { continue }
+                let isVisible: Bool = withUnsafePointer(to: entry.pointee.d_name) { ptr in
+                    ptr.withMemoryRebound(to: CChar.self, capacity: nameLen) { cStr in
+                        if cStr[0] == 46 { // '.'
+                            if nameLen == 1 { return false }
+                            if nameLen == 2 && cStr[1] == 46 { return false }
+                            return showHidden
+                        }
+                        return true
+                    }
+                }
+                if isVisible { return true }
+            }
+            return false
         }
     }
 
@@ -230,23 +218,26 @@ final class FileListView: NSView {
     private let outline = KeyOutlineView()
     var outlineView: NSOutlineView { outline }
     private let swipeBadge = SwipeIndicatorBadge()
-    private let swipeTriggerThreshold: CGFloat = 64
+    private let swipeTriggerThreshold: CGFloat = 128
     private var badgeLeadingConstraint: NSLayoutConstraint!
     private var badgeCenterYConstraint: NSLayoutConstraint!
     private var topLevel: [Any] = []
     private var sections: [FileSection] = []
     /// 展开状态按路径记住，刷新/排序后仍然保持
     private var expandedPaths: Set<String> = []
-    /// 当前列布局（表头与列表行共用）。
-    /// 当前列布局：表头、列分隔线、行内单元格共用同一套坐标（列表左沿为 0）。
+    /// 当前列布局：表头、列分隔线、行内单元格共用同一套文档坐标（列表文档左沿为 0）。
     fileprivate var columnLayout = ColumnLayout()
 
     override func layout() {
         super.layout()
         let previous = columnLayout.entries.map { $0.column }
         let columns = visibleColumns()
-        columnLayout = makeLayout(totalWidth: bounds.width, columns: columns)
+        columnLayout = makeLayout(columns: columns)
+        updateDocumentWidth()
+        let offsetX = scrollOffsetX
+        header.scrollOffsetX = offsetX
         header.apply(layout: columnLayout, sort: sortField, ascending: ascending)
+        dividerLayer.scrollOffsetX = offsetX
         dividerLayer.apply(layout: columnLayout)
         if previous != columns {
             // 列集合变了：让复用的单元格按新列数重排
@@ -302,15 +293,15 @@ final class FileListView: NSView {
         outline.rowHeight = rowHeight
         outline.indentationPerLevel = 16
         outline.indentationMarkerFollowsCell = true
-        // 让唯一的一列撑满整个列表宽度：点右侧的列也能正常选中行。
-        outline.autoresizesOutlineColumn = true
+        // 让唯一的一列撑满整个列表文档宽度：支持列宽无上限时横向滚动，点右侧列也能正常选中行。
+        outline.autoresizesOutlineColumn = false
         // 斑马线用系统自带的交替行底色与自定义行绘制联动：根据偏好设置控制
         outline.usesAlternatingRowBackgroundColors = AppSettings.showZebraStripes
         outline.backgroundColor = .controlBackgroundColor
         outline.allowsMultipleSelection = true
         outline.allowsEmptySelection = true
         outline.allowsColumnReordering = false
-        outline.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        outline.columnAutoresizingStyle = .noColumnAutoresizing
         outline.selectionHighlightStyle = .regular
         outline.focusRingType = .none
         outline.dataSource = self
@@ -344,7 +335,7 @@ final class FileListView: NSView {
             if let cell = self.outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? FileRowCell {
                 return cell.isPointInName(point, in: self.outline)
             }
-            return true
+            return false
         }
 
         NotificationCenter.default.addObserver(forName: .zebraStripesDidChange, object: nil, queue: .main) { [weak self] _ in
@@ -366,17 +357,28 @@ final class FileListView: NSView {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = outline
         scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = false
+        scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
         scroll.drawsBackground = true
         scroll.backgroundColor = .controlBackgroundColor
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleClipBoundsDidChange(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scroll.contentView
+        )
         scroll.onSwipeBegin = { [weak self] in
             self?.handleSwipeBegin()
         }
         scroll.canSwipe = { [weak self] in
             guard let self else { return false }
             return (self.canSwipeBack?() ?? false) || (self.canSwipeForward?() ?? false)
+        }
+        scroll.canSwipeDirection = { [weak self] isBack in
+            guard let self else { return false }
+            return isBack ? (self.canSwipeBack?() ?? false) : (self.canSwipeForward?() ?? false)
         }
         scroll.onSwipeChange = { [weak self] totalFingerDX in
             self?.handleSwipeChange(totalFingerDX: totalFingerDX)
@@ -426,6 +428,16 @@ final class FileListView: NSView {
         header.apply(layout: columnLayout, sort: sortField, ascending: ascending)
     }
 
+    @objc private func handleClipBoundsDidChange(_ notification: Notification) {
+        let offsetX = scrollOffsetX
+        if abs(header.scrollOffsetX - offsetX) > 0.05 {
+            header.scrollOffsetX = offsetX
+        }
+        dividerLayer.scrollOffsetX = offsetX
+        dividerLayer.needsDisplay = true
+        window?.invalidateCursorRects(for: dividerLayer)
+    }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         outline.backgroundColor = .controlBackgroundColor
@@ -438,7 +450,7 @@ final class FileListView: NSView {
         needsDisplay = true
     }
 
-    // MARK: - 触摸板丝滑左右滑动手势（右滑回退 / 左滑前进）
+    // MARK: - 触摸板丝滑左右滑动手势（右滑回退 / 左滑前进，Chrome 级阻尼与触发阈值）
 
     private func handleSwipeBegin() {
         outline.layer?.removeAllAnimations()
@@ -458,20 +470,20 @@ final class FileListView: NSView {
             swipeBadge.alphaValue = 0
             return
         }
-        let isBack = (totalFingerDX >= 0) ? true : (!canFwd && canBack)
-        let isRightSlide = (totalFingerDX >= 0)
+        let isBack = (totalFingerDX >= 0)
+        let isRightSlide = isBack
         let allowed = isBack ? canBack : canFwd
         let absDX = abs(totalFingerDX)
 
-        let maxVisualShift: CGFloat = allowed ? 52 : 12
-        let damping: CGFloat = allowed ? 0.42 : 0.10
+        let maxVisualShift: CGFloat = allowed ? 44 : 10
+        let damping: CGFloat = allowed ? 0.30 : 0.08
         let rawShift = absDX * damping
         let dampedShift = maxVisualShift * (1 - exp(-rawShift / max(1, maxVisualShift)))
         let signedShift = isRightSlide ? dampedShift : -dampedShift
 
         // 表头、中缝竖线、列表正文整体联动平移，保持 100% 相对位置对齐，绝不偏移割裂
         let t = CATransform3DMakeTranslation(signedShift, 0, 0)
-        let op: Float = allowed ? Float(max(0.86, 1.0 - (absDX / swipeTriggerThreshold) * 0.10)) : 1.0
+        let op: Float = allowed ? Float(max(0.88, 1.0 - (absDX / swipeTriggerThreshold) * 0.08)) : 1.0
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -496,12 +508,12 @@ final class FileListView: NSView {
         swipeBadge.isHidden = false
         swipeBadge.configure(isBack: isBack, progress: progress, isArmed: ready)
         // 透明度从浅变深：0.0 渐进平滑过渡至 1.0
-        swipeBadge.alphaValue = min(1.0, max(0.0, pow(clamped, 0.92)))
+        swipeBadge.alphaValue = min(1.0, max(0.0, pow(clamped, 1.05)))
 
         let badgeD = SwipeIndicatorBadge.diameter
         let startMargin: CGFloat = 8
-        let maxTravel: CGFloat = 28
-        let currentTravel = min(maxTravel, absDX * 0.28)
+        let maxTravel: CGFloat = 26
+        let currentTravel = min(maxTravel, absDX * 0.20)
         if isRightSlide {
             badgeLeadingConstraint.constant = startMargin + currentTravel
         } else {
@@ -512,15 +524,15 @@ final class FileListView: NSView {
     private func handleSwipeEnd(totalFingerDX: CGFloat, velocityX: CGFloat, cancelled: Bool) {
         let canBack = canSwipeBack?() ?? false
         let canFwd = canSwipeForward?() ?? false
-        let isBack = (totalFingerDX >= 0) ? true : (!canFwd && canBack)
-        let isRightSlide = (totalFingerDX >= 0)
+        let isBack = (totalFingerDX >= 0)
+        let isRightSlide = isBack
         let allowed = isBack ? canBack : canFwd
         let absDX = abs(totalFingerDX)
         let sameDirVelocity = isRightSlide ? velocityX : -velocityX
 
-        let triggered = !cancelled && allowed && (
+        let triggered = !cancelled && allowed && sameDirVelocity >= -1.5 && (
             absDX >= swipeTriggerThreshold ||
-            (absDX >= swipeTriggerThreshold * 0.50 && sameDirVelocity > 9.0)
+            (absDX >= swipeTriggerThreshold * 0.75 && sameDirVelocity > 18.0)
         )
 
         if triggered {
@@ -791,7 +803,7 @@ final class FileListView: NSView {
 
     // MARK: - 列显示设置（表头右键）
 
-    /// 表头右键菜单：勾选要显示的列，底部可恢复 / 设为默认。
+    /// 表头右键菜单：勾选要显示的列，底部可自动适配列宽 / 恢复 / 设为默认。
     private func makeColumnMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -805,6 +817,9 @@ final class FileListView: NSView {
         }
 
         menu.addItem(.separator())
+        let fitAll = NSMenuItem(title: "自动适配所有列宽", action: #selector(autoFitAllColumns), keyEquivalent: "")
+        fitAll.target = self
+        menu.addItem(fitAll)
         let restore = NSMenuItem(title: "恢复到默认", action: #selector(restoreDefaultColumns), keyEquivalent: "")
         restore.target = self
         menu.addItem(restore)
@@ -838,55 +853,66 @@ final class FileListView: NSView {
 
     private func reloadColumns() {
         let columns = visibleColumns()
-        columnLayout = makeLayout(totalWidth: bounds.width, columns: columns)
+        columnLayout = makeLayout(columns: columns)
+        updateDocumentWidth()
+        let offsetX = scrollOffsetX
+        header.scrollOffsetX = offsetX
         header.apply(layout: columnLayout, sort: sortField, ascending: ascending)
+        dividerLayer.scrollOffsetX = offsetX
         dividerLayer.apply(layout: columnLayout)
         outline.reloadData()
         restoreExpansion()
     }
 
-    // MARK: - 列宽拖拽
+    // MARK: - 列宽拖拽与双击自适应
 
-    /// 正在进行的拖拽：被调整的列 + 它的左边缘 x（右边界跟随光标）。
-    private var resizeSession: (target: ResizableColumn, leftEdge: CGFloat)?
+    /// 正在进行的拖拽：被调整的列 + 起始窗口 X + 起始列宽（1:1 跟随鼠标增量，不受滚动条位置影响）。
+    private var resizeSession: (target: ResizableColumn, startWindowX: CGFloat, initialWidth: CGFloat)?
 
-    /// 当前所有可拖动的分隔线。每条线调整的是它**左侧**那一列：
-    /// 第一条线的左侧是名称列，其余是前一个数据列。
+    /// 当前所有可拖动的分隔线（文档坐标）。
+    /// 每条分隔线仅调整它**左侧**紧邻的那一列（名称列或某一数据列），
+    /// 最右侧列同样拥有右侧专属分隔线，拉宽时完全不影响其他列宽度。
     fileprivate func dividers() -> [ColumnDivider] {
-        var result: [ColumnDivider] = []
+        var result: [ColumnDivider] = [
+            ColumnDivider(
+                target: .name,
+                x: columnLayout.nameRect.maxX,
+                isRightmost: columnLayout.entries.isEmpty
+            )
+        ]
         for (index, entry) in columnLayout.entries.enumerated() {
-            let target: ResizableColumn = index == 0
-                ? .name
-                : .column(columnLayout.entries[index - 1].column)
-            result.append(ColumnDivider(target: target, x: entry.rect.minX))
+            let isLast = (index == columnLayout.entries.count - 1)
+            result.append(ColumnDivider(
+                target: .column(entry.column),
+                x: entry.rect.maxX,
+                isRightmost: isLast
+            ))
         }
         return result
     }
 
-    /// 命中某条分隔线（x 落在线的容差范围内）。
-    fileprivate func divider(at x: CGFloat, tolerance: CGFloat) -> ColumnDivider? {
-        dividers().first { abs($0.x - x) <= tolerance }
-    }
-
-    /// 目标列的左边缘 x（左对齐布局下左边缘固定，右边界才是跟随光标的那条边）。
-    fileprivate func leftEdge(of target: ResizableColumn) -> CGFloat {
-        switch target {
-        case .name:
-            return 0
-        case .column(let column):
-            return columnLayout.entries.first { $0.column == column }?.rect.minX ?? 0
+    /// 命中某条分隔线（docX 为文档坐标；最右侧列分隔线向右放宽热区，更方便抓握拉宽）。
+    fileprivate func divider(at docX: CGFloat, tolerance: CGFloat) -> ColumnDivider? {
+        for div in dividers() {
+            let leftTol = tolerance
+            let rightTol = div.isRightmost ? tolerance + 8 : tolerance
+            if docX >= div.x - leftTol && docX <= div.x + rightTol {
+                return div
+            }
         }
+        return nil
     }
 
-    /// 抓住一条分隔线。
-    fileprivate func beginColumnResize(_ target: ResizableColumn) {
-        resizeSession = (target, leftEdge(of: target))
+    /// 抓住一条分隔线开始拖拽。
+    fileprivate func beginColumnResize(_ target: ResizableColumn, startWindowX: CGFloat) {
+        resizeSession = (target, startWindowX, currentWidth(of: target))
     }
 
-    /// 拖到 x：目标列的右边界跟随光标（列宽 = 光标 x − 该列左边缘）。
-    fileprivate func updateColumnResize(toX x: CGFloat) {
+    /// 拖拽移动：目标列宽度按鼠标位移增量 1:1 变化，不影响其他任何列。
+    fileprivate func updateColumnResize(currentWindowX: CGFloat) {
         guard let session = resizeSession else { return }
-        applyColumnWidth(session.target, x - session.leftEdge)
+        let delta = currentWindowX - session.startWindowX
+        applyColumnWidth(session.target, session.initialWidth + delta)
     }
 
     /// 松手：把本次拖拽结果落盘。
@@ -896,8 +922,70 @@ final class FileListView: NSView {
         persistColumnWidths()
     }
 
-    /// 应用新的列宽：夹在 [最小宽, 最大宽] 内（到边界就停），
-    /// 重新计算布局并刷新表头、分隔线与可见行。
+    /// 双击分隔线：自动测量该列当前最长内容并适配列宽（不影响其他列）。
+    fileprivate func autoFitColumn(_ target: ResizableColumn) {
+        let fitted = idealWidth(for: target)
+        applyColumnWidth(target, fitted)
+        persistColumnWidths()
+    }
+
+    @objc private func autoFitAllColumns() {
+        sessionNameWidth = idealWidth(for: .name)
+        for col in visibleColumns() {
+            sessionWidths[col.rawValue] = idealWidth(for: .column(col))
+        }
+        persistColumnWidths()
+    }
+
+    private func idealWidth(for target: ResizableColumn) -> CGFloat {
+        let rowCount = outline.numberOfRows
+        switch target {
+        case .name:
+            let font = NSFont.systemFont(ofSize: 12.5)
+            var maxW = Self.minNameWidth
+            let baseTextX = Self.nameIconX + iconSize + 6
+            for row in 0..<rowCount {
+                guard let node = outline.item(atRow: row) as? FileNode else { continue }
+                let level = CGFloat(max(0, outline.level(forRow: row)))
+                let indent = KeyOutlineView.leftIndentOffset + (level + 1) * outline.indentationPerLevel
+                let nameW = ceil((node.item.name as NSString).size(withAttributes: [.font: font]).width)
+                let tagW = node.item.tags.isEmpty ? 0 : (TagDotsView.preferredWidth(count: node.item.tags.count) + 6)
+                let needed = indent + baseTextX + nameW + tagW + 20
+                if needed > maxW { maxW = needed }
+            }
+            return min(Self.maxNameWidth, maxW)
+
+        case .column(let column):
+            let headerFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            let cellFont = NSFont.systemFont(ofSize: 11.5)
+            let headerW = ceil((column.title as NSString).size(withAttributes: [.font: headerFont]).width) + 28
+            var maxW = max(column.minWidth, headerW)
+            for row in 0..<rowCount {
+                guard let node = outline.item(atRow: row) as? FileNode else { continue }
+                let text: String
+                if column == .size {
+                    if node.item.isPackage || (node.item.isNavigable && AppSettings.calculateFolderSizes) {
+                        if let cached = BundleSizeCache.shared.size(for: node.item.url) {
+                            text = Format.bytes(cached)
+                        } else {
+                            text = "--"
+                        }
+                    } else if node.item.isNavigable {
+                        text = "--"
+                    } else {
+                        text = column.value(for: node.item)
+                    }
+                } else {
+                    text = column.value(for: node.item)
+                }
+                let textW = ceil((text as NSString).size(withAttributes: [.font: cellFont]).width) + 20
+                if textW > maxW { maxW = textW }
+            }
+            return min(column.maxWidth, maxW)
+        }
+    }
+
+    /// 应用新的列宽：夹在 [最小宽, 最大宽] 内，重新计算布局并刷新表头、分隔线与可见行。
     private func applyColumnWidth(_ target: ResizableColumn, _ requested: CGFloat) {
         let range = widthRange(for: target)
         let newWidth = min(max(requested, range.min), range.max)
@@ -925,23 +1013,54 @@ final class FileListView: NSView {
         refreshColumnLayout()
     }
 
+    /// 根据所有列总宽度与可视区域宽度同步更新文档宽度，超出时自动激活水平滚动。
+    private func updateDocumentWidth() {
+        let clipWidth = scroll.contentView.bounds.width
+        let minWidthForCurrentScroll = resizeSession != nil
+            ? (scroll.contentView.bounds.origin.x + clipWidth)
+            : 0
+        let targetWidth = max(
+            clipWidth,
+            columnLayout.totalWidth + Self.trailingBreathingSpace,
+            minWidthForCurrentScroll
+        )
+        outline.minimumDocumentWidth = targetWidth
+        if let col = outline.tableColumns.first, abs(col.width - targetWidth) > 0.5 {
+            col.minWidth = targetWidth
+            col.maxWidth = max(100000, targetWidth)
+            col.width = targetWidth
+        }
+        if abs(outline.frame.width - targetWidth) > 0.5 {
+            outline.setFrameSize(NSSize(width: targetWidth, height: outline.frame.height))
+        }
+    }
+
     /// 重新计算列布局并刷新相关界面。
     private func refreshColumnLayout() {
         let columns = visibleColumns()
-        columnLayout = makeLayout(totalWidth: bounds.width, columns: columns)
+        columnLayout = makeLayout(columns: columns)
+        updateDocumentWidth()
+        let offsetX = scrollOffsetX
+        header.scrollOffsetX = offsetX
         header.apply(layout: columnLayout, sort: sortField, ascending: ascending)
+        dividerLayer.scrollOffsetX = offsetX
         dividerLayer.apply(layout: columnLayout)
         relayoutVisibleCells()
-        // 列宽变化后，上下限可能变了 → 光标方向（单向 / 双向）要重算
         window?.invalidateCursorRects(for: dividerLayer)
     }
 
+    /// 当前是否包含分组标题行（无分组时斑马线与分隔线裁剪可跳过逐行探测，达到 O(1) 性能）。
+    fileprivate var hasGroupHeaders: Bool {
+        sections.contains { !$0.title.isEmpty }
+    }
+
     /// 让当前可见的文件行按最新的列布局重排
-    /// （列宽拖拽、窗口缩放后立即生效，不等 AppKit 的布局时机，避免行内列位置停留在旧值）。
+    /// （仅遍历屏幕已挂载的可见行视图，大目录下拖拽列宽依然丝滑跟手）。
     private func relayoutVisibleCells() {
-        for row in 0..<outline.numberOfRows {
-            guard let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? FileRowCell else { continue }
-            cell.updateFrames()
+        outline.enumerateAvailableRowViews { rowView, _ in
+            if let cell = rowView.view(atColumn: 0) as? FileRowCell {
+                cell.updateFrames()
+            }
         }
     }
 }
@@ -1091,6 +1210,23 @@ extension FileListView: NSOutlineViewDataSource, NSOutlineViewDelegate {
 // MARK: - 表格子类
 
 /// 分栏视图与本列表共用的按键/右键菜单转发版本，支持原生文件拖拽、划选多选以及「点击选中后再次点击就地重命名」。
+enum InlineRenameTracker {
+    private static var lastEndEventNumber: Int?
+    private static var lastEndUptime: TimeInterval = 0
+
+    static func markEditingEnded() {
+        lastEndEventNumber = NSApp.currentEvent?.eventNumber
+        lastEndUptime = ProcessInfo.processInfo.systemUptime
+    }
+
+    static func didEndDuring(event: NSEvent) -> Bool {
+        if let endNum = lastEndEventNumber, endNum == event.eventNumber {
+            return true
+        }
+        return (ProcessInfo.processInfo.systemUptime - lastEndUptime) < 0.08
+    }
+}
+
 final class KeyTableView: NSTableView {
     var keyHandler: ((NSEvent) -> Bool)?
     var menuProvider: ((NSEvent?) -> NSMenu?)?
@@ -1105,15 +1241,25 @@ final class KeyTableView: NSTableView {
     private var mouseDidDrag = false
     private var mouseDownPoint: NSPoint?
     private var didClickOnMultiSelection = false
+    /// 列布局要求的最少文档宽度（超出可视区域宽度时激活水平滚动）。
+    var minimumDocumentWidth: CGFloat = 0
 
     override func setFrameSize(_ newSize: NSSize) {
         var size = newSize
         if let clip = enclosingScrollView?.contentView {
             let visibleSize = clip.bounds.size
-            if size.width < visibleSize.width { size.width = visibleSize.width }
+            let targetWidth = max(visibleSize.width, minimumDocumentWidth)
+            if size.width < targetWidth || (targetWidth > 0 && abs(size.width - targetWidth) > 0.5) {
+                size.width = targetWidth
+            }
             if size.height < visibleSize.height { size.height = visibleSize.height }
         }
         super.setFrameSize(size)
+        if let col = tableColumns.first, abs(col.width - size.width) > 0.5 {
+            col.minWidth = size.width
+            col.maxWidth = max(100000, size.width)
+            col.width = size.width
+        }
     }
 
     override func keyDown(with event: NSEvent) {
@@ -1175,12 +1321,45 @@ final class KeyTableView: NSTableView {
         }
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self),
+           let superview = self.superview {
+            let ptInEditor = editor.convert(point, from: superview)
+            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
+                return editor
+            }
+        }
+        return super.hitTest(point)
+    }
+
+    override func validateProposedFirstResponder(_ responder: NSResponder, for event: NSEvent?) -> Bool {
+        if responder is NSTextView {
+            return true
+        }
+        if let tf = responder as? NSTextField, tf.isEditable {
+            return true
+        }
+        return super.validateProposedFirstResponder(responder, for: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
         pendingRenameWorkItem?.cancel()
         pendingRenameWorkItem = nil
         mouseDidDrag = false
         potentialRenameRow = nil
         mouseDownPoint = event.locationInWindow
+
+        let wasEditingBeforeClick: Bool
+        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self) {
+            let ptInEditor = editor.convert(event.locationInWindow, from: nil)
+            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
+                editor.mouseDown(with: event)
+                return
+            }
+            wasEditingBeforeClick = true
+        } else {
+            wasEditingBeforeClick = InlineRenameTracker.didEndDuring(event: event)
+        }
 
         let point = convert(event.locationInWindow, from: nil)
         let row = self.row(at: point)
@@ -1195,6 +1374,7 @@ final class KeyTableView: NSTableView {
         }
 
         window?.makeFirstResponder(self)
+        let didEndEditingOnThisClick = wasEditingBeforeClick || InlineRenameTracker.didEndDuring(event: event)
 
         // 点击空白处：与访达一致清空选中并直接返回，防止触发系统内置划选导致多行意外变灰选中
         guard row >= 0 else {
@@ -1207,11 +1387,11 @@ final class KeyTableView: NSTableView {
             return
         }
 
-        // 判断该项在点击前是否已被单独选中，并且点击在文件名文本区域
+        // 判断该项在点击前是否已被单独选中，并且点击在文件名文本区域（若本次点击刚退出了重命名，则不重新触发重命名）
         let wasAlreadySingleSelected = (selectedRowIndexes.count == 1 && selectedRowIndexes.contains(row))
-        let hitName = isPointInName?(row, point) ?? true
+        let hitName = isPointInName?(row, point) ?? false
 
-        if wasAlreadySingleSelected && hitName && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) {
+        if !didEndEditingOnThisClick && wasAlreadySingleSelected && hitName && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) {
             potentialRenameRow = row
         }
 
@@ -1389,12 +1569,18 @@ final class FileListRowView: ColumnTableRowView {
         }
 
         // 计算当前文件行在所属分组内的相对序号（从 0 开始），确保每个分组下的文件从第一行纯白开始交替
-        var fileIndexWithinGroup = 0
-        for r in (0..<row).reversed() {
-            if let item = table.item(atRow: r), item is FileListView.GroupNode {
-                break
+        let fileIndexWithinGroup: Int
+        if let listOwner = table.dataSource as? FileListView, !listOwner.hasGroupHeaders {
+            fileIndexWithinGroup = row
+        } else {
+            var idx = 0
+            for r in (0..<row).reversed() {
+                if let item = table.item(atRow: r), item is FileListView.GroupNode {
+                    break
+                }
+                idx += 1
             }
-            fileIndexWithinGroup += 1
+            fileIndexWithinGroup = idx
         }
 
         let stripeColor = NSColor.alternatingContentBackgroundColors.count > 1
@@ -1439,15 +1625,25 @@ final class KeyOutlineView: NSOutlineView {
     private var mouseDidDrag = false
     private var mouseDownPoint: NSPoint?
     private var didClickOnMultiSelection = false
+    /// 列布局要求的最少文档宽度（超出可视区域宽度时激活水平滚动）。
+    var minimumDocumentWidth: CGFloat = 0
 
     override func setFrameSize(_ newSize: NSSize) {
         var size = newSize
         if let clip = enclosingScrollView?.contentView {
             let visibleSize = clip.bounds.size
-            if size.width < visibleSize.width { size.width = visibleSize.width }
+            let targetWidth = max(visibleSize.width, minimumDocumentWidth)
+            if size.width < targetWidth || (targetWidth > 0 && abs(size.width - targetWidth) > 0.5) {
+                size.width = targetWidth
+            }
             if size.height < visibleSize.height { size.height = visibleSize.height }
         }
         super.setFrameSize(size)
+        if let col = tableColumns.first, abs(col.width - size.width) > 0.5 {
+            col.minWidth = size.width
+            col.maxWidth = max(100000, size.width)
+            col.width = size.width
+        }
     }
 
     override func keyDown(with event: NSEvent) {
@@ -1508,12 +1704,45 @@ final class KeyOutlineView: NSOutlineView {
         }
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self),
+           let superview = self.superview {
+            let ptInEditor = editor.convert(point, from: superview)
+            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
+                return editor
+            }
+        }
+        return super.hitTest(point)
+    }
+
+    override func validateProposedFirstResponder(_ responder: NSResponder, for event: NSEvent?) -> Bool {
+        if responder is NSTextView {
+            return true
+        }
+        if let tf = responder as? NSTextField, tf.isEditable {
+            return true
+        }
+        return super.validateProposedFirstResponder(responder, for: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
         pendingRenameWorkItem?.cancel()
         pendingRenameWorkItem = nil
         mouseDidDrag = false
         potentialRenameRow = nil
         mouseDownPoint = event.locationInWindow
+
+        let wasEditingBeforeClick: Bool
+        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self) {
+            let ptInEditor = editor.convert(event.locationInWindow, from: nil)
+            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
+                editor.mouseDown(with: event)
+                return
+            }
+            wasEditingBeforeClick = true
+        } else {
+            wasEditingBeforeClick = InlineRenameTracker.didEndDuring(event: event)
+        }
 
         let point = convert(event.locationInWindow, from: nil)
         let row = self.row(at: point)
@@ -1539,6 +1768,7 @@ final class KeyOutlineView: NSOutlineView {
         }
 
         window?.makeFirstResponder(self)
+        let didEndEditingOnThisClick = wasEditingBeforeClick || InlineRenameTracker.didEndDuring(event: event)
 
         // 点击空白处或分组标题行：不进入系统内置划选循环，防止移动鼠标时多行被意外划选变灰
         guard row >= 0, !isGroup else {
@@ -1551,11 +1781,11 @@ final class KeyOutlineView: NSOutlineView {
             return
         }
 
-        // 判断该项在点击前是否已被单独选中，并且点击在文件名文本区域
+        // 判断该项在点击前是否已被单独选中，并且点击在文件名文本区域（若本次点击刚退出了重命名，则不重新触发重命名）
         let wasAlreadySingleSelected = (selectedRowIndexes.count == 1 && selectedRowIndexes.contains(row))
-        let hitName = isPointInName?(row, point) ?? true
+        let hitName = isPointInName?(row, point) ?? false
 
-        if wasAlreadySingleSelected && hitName && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) {
+        if !didEndEditingOnThisClick && wasAlreadySingleSelected && hitName && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) {
             potentialRenameRow = row
         }
 
@@ -1673,7 +1903,7 @@ final class KeyOutlineView: NSOutlineView {
 // MARK: - 表头
 
 /// 自绘表头：列名加粗、列之间有贯通的竖线、排序用与左右箭头同风格的细箭头图标。
-/// 右键表头可以控制显示哪些列（访达同款）。
+/// 右键表头可以控制显示哪些列（访达同款），并随列表水平滚动同步平移。
 private final class ListHeaderBar: NSView {
 
     var onSort: ((SortField) -> Void)?
@@ -1683,6 +1913,12 @@ private final class ListHeaderBar: NSView {
     private var layout = FileListView.ColumnLayout()
     private var sortField: SortField = .name
     private var ascending = true
+    var scrollOffsetX: CGFloat = 0 {
+        didSet {
+            guard abs(oldValue - scrollOffsetX) > 0.05 else { return }
+            needsDisplay = true
+        }
+    }
 
     override var isFlipped: Bool { true }
 
@@ -1690,19 +1926,19 @@ private final class ListHeaderBar: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        let docX = point.x + scrollOffsetX
         // 名称列
-        let nameRight = layout.entries.first?.rect.minX ?? bounds.width
-        if point.x < nameRight {
+        let nameRight = layout.nameRect.maxX
+        if docX >= 0 && docX < nameRight {
             onSort?(.name)
             return
         }
         // 其它列
-        for entry in layout.entries where point.x >= entry.rect.minX && point.x <= entry.rect.maxX {
+        for entry in layout.entries where docX >= entry.rect.minX && docX <= entry.rect.maxX {
             if let field = entry.column.sortField { onSort?(field) }
             return
         }
     }
-
 
     override func draw(_ dirtyRect: NSRect) {
         Theme.paneBackground.setFill()
@@ -1714,9 +1950,9 @@ private final class ListHeaderBar: NSView {
         // 保证每个列间隙从头到尾只有一条线，不会出现表头一条、正文一条的错位。
 
         // 名称列
-        let nameRight = layout.entries.first?.rect.minX ?? bounds.width
+        let nameRight = layout.nameRect.maxX
         drawTitle("名称",
-                  in: NSRect(x: FileListView.headerNameX,
+                  in: NSRect(x: FileListView.headerNameX - scrollOffsetX,
                              y: 0,
                              width: max(0, nameRight - FileListView.headerNameX),
                              height: height),
@@ -1725,7 +1961,8 @@ private final class ListHeaderBar: NSView {
 
         // 其它列
         for entry in layout.entries {
-            drawTitle(entry.column.title, in: entry.rect, inset: 6,
+            let rect = entry.rect.offsetBy(dx: -scrollOffsetX, dy: 0)
+            drawTitle(entry.column.title, in: rect, inset: 6,
                       sorted: entry.column.sortField == sortField)
         }
 
@@ -1804,9 +2041,9 @@ private final class ListHeaderBar: NSView {
 // MARK: - 列分隔线层
 
 /// 列之间的分隔线层：覆盖整块列表区域（表头 + 正文），从上到下贯穿，
-/// **每个列间隙只有一条线**。
+/// **每个列间隙以及最右侧列右边缘各有一条线**。
 ///
-/// 它同时是唯一的列宽拖拽入口——竖线在表头还是在正文都能拖：
+/// 它同时是唯一的列宽拖拽入口——竖线在表头还是在正文都能拖，双击分隔线可自动适配列宽：
 /// 命中竖线时接管鼠标事件，其余位置一律穿透给下层（表头排序、列表选中照常）。
 private final class ColumnDividerLayer: NSView {
 
@@ -1814,8 +2051,28 @@ private final class ColumnDividerLayer: NSView {
     private var layout = FileListView.ColumnLayout()
     /// 分隔线命中容差（像素）。
     private let tolerance: CGFloat = 5
+    var scrollOffsetX: CGFloat = 0
+    private var isDraggingDivider: Bool = false
+    private var activeDividerTarget: ResizableColumn?
+    private var hoveredDividerTarget: ResizableColumn?
+    private var trackingArea: NSTrackingArea?
 
     override var isFlipped: Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
 
     func apply(layout: FileListView.ColumnLayout) {
         self.layout = layout
@@ -1824,23 +2081,54 @@ private final class ColumnDividerLayer: NSView {
 
     /// 只有点在竖线附近才接管鼠标事件，其余穿透给下层视图。
     override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let owner else { return nil }
         let local = convert(point, from: superview)
-        guard owner?.divider(at: local.x, tolerance: tolerance) != nil else { return nil }
+        let docX = local.x + owner.scrollOffsetX
+        guard owner.divider(at: docX, tolerance: tolerance) != nil else { return nil }
         return super.hitTest(point)
     }
 
-    override func mouseDown(with event: NSEvent) {
+    override func mouseMoved(with event: NSEvent) {
+        guard let owner, !isDraggingDivider else { return }
         let point = convert(event.locationInWindow, from: nil)
-        guard let divider = owner?.divider(at: point.x, tolerance: tolerance) else { return }
-        owner?.beginColumnResize(divider.target)
+        let docX = point.x + owner.scrollOffsetX
+        let hit = owner.divider(at: docX, tolerance: tolerance)?.target
+        if hoveredDividerTarget != hit {
+            hoveredDividerTarget = hit
+            needsDisplay = true
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if hoveredDividerTarget != nil {
+            hoveredDividerTarget = nil
+            needsDisplay = true
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let owner else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let docX = point.x + owner.scrollOffsetX
+        guard let divider = owner.divider(at: docX, tolerance: tolerance) else { return }
+        if event.clickCount == 2 {
+            owner.autoFitColumn(divider.target)
+            return
+        }
+        isDraggingDivider = true
+        activeDividerTarget = divider.target
+        needsDisplay = true
+        owner.beginColumnResize(divider.target, startWindowX: event.locationInWindow.x)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        owner?.updateColumnResize(toX: point.x)
+        owner?.updateColumnResize(currentWindowX: event.locationInWindow.x)
     }
 
     override func mouseUp(with event: NSEvent) {
+        isDraggingDivider = false
+        activeDividerTarget = nil
+        needsDisplay = true
         owner?.endColumnResize()
     }
 
@@ -1853,23 +2141,30 @@ private final class ColumnDividerLayer: NSView {
     override func resetCursorRects() {
         super.resetCursorRects()
         guard let owner else { return }
+        let offsetX = owner.scrollOffsetX
         for divider in owner.dividers() {
+            let viewX = divider.x - offsetX
+            let leftTol = tolerance
+            let rightTol = divider.isRightmost ? tolerance + 8 : tolerance
+            guard viewX + rightTol >= 0 && viewX - leftTol <= bounds.width else { continue }
             let range = owner.widthRange(for: divider.target)
             let cursor = ColumnResizeCursor.cursor(for: range.direction(for: owner.currentWidth(of: divider.target)))
-            addCursorRect(NSRect(x: divider.x - tolerance, y: 0,
-                                 width: tolerance * 2, height: bounds.height),
+            addCursorRect(NSRect(x: viewX - leftTol, y: 0,
+                                 width: leftTol + rightTol, height: bounds.height),
                           cursor: cursor)
         }
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        guard let owner else { return }
         // 设备像素级 1px 发丝线：整数设备像素对齐，任何屏幕都清晰不糊。
         let scale = (window?.screen?.backingScaleFactor) ?? 1
         let lineW = 1.0 / scale
+        let offsetX = owner.scrollOffsetX
 
         NSGraphicsContext.current?.saveGraphicsState()
         // 排除可视区域内的所有分组标题行矩形，防止竖线切断分组标题
-        if let outline = owner?.outlineView {
+        if owner.hasGroupHeaders, let outline = owner.outlineView as NSOutlineView? {
             let visibleRect = outline.visibleRect
             let visibleRows = outline.rows(in: visibleRect)
             if visibleRows.length > 0 {
@@ -1886,10 +2181,23 @@ private final class ColumnDividerLayer: NSView {
             }
         }
 
-        NSColor.separatorColor.setFill()
-        for entry in layout.entries {
-            let x = (entry.rect.minX * scale).rounded() / scale
-            NSRect(x: x, y: 0, width: lineW, height: bounds.height).fill()
+        for div in owner.dividers() {
+            let viewX = div.x - offsetX
+            guard viewX >= -4 && viewX <= bounds.width + 4 else { continue }
+            let x = (viewX * scale).rounded() / scale
+            let isActive = (isDraggingDivider && activeDividerTarget == div.target)
+            let isHovered = (!isDraggingDivider && hoveredDividerTarget == div.target)
+
+            if isActive {
+                NSColor.controlAccentColor.withAlphaComponent(0.85).setFill()
+                NSRect(x: x - 0.5, y: 0, width: max(1.5, lineW * 2), height: bounds.height).fill()
+            } else if isHovered {
+                NSColor.controlAccentColor.withAlphaComponent(0.55).setFill()
+                NSRect(x: x - 0.5, y: 0, width: max(1.5, lineW * 2), height: bounds.height).fill()
+            } else {
+                NSColor.separatorColor.setFill()
+                NSRect(x: x, y: 0, width: lineW, height: bounds.height).fill()
+            }
         }
         NSGraphicsContext.current?.restoreGraphicsState()
     }
@@ -2012,19 +2320,16 @@ private final class FileRowCell: NSTableCellView, NSTextFieldDelegate {
     // MARK: - 就地重命名
 
     func isPointInName(_ pointInOutline: NSPoint, in outline: NSOutlineView) -> Bool {
+        guard !isInlineEditing else { return false }
         let local = convert(pointInOutline, from: outline)
         guard local.y >= 0 && local.y <= bounds.height else { return false }
-        let currentOwner = owner
-        let nameIconX: CGFloat = FileListView.nameIconX
-        let nameTextX: CGFloat = nameIconX + (currentOwner?.iconSize ?? Theme.listIconSize) + 6
-        // 排除左侧图标和展开三角（小于 nameTextX - 4）
-        if local.x < nameTextX - 4 { return false }
-        // 排除右侧其他属性列（大小/修改日期等）
-        let dx = convert(NSPoint.zero, to: owner).x
-        let nameRight = (owner?.columnLayout.nameRect.maxX ?? 300) - dx
-        if local.x > nameRight { return false }
-        if !tagDotsView.isHidden && local.x > tagDotsView.frame.minX - 4 { return false }
-        return true
+        // 严格匹配文件名文字实际渲染的区域（与访达一致：仅点击文件名文字本身才触发重命名，点击图标、同行空白处或其他列均不触发）
+        let font = title.font ?? .systemFont(ofSize: 12.5)
+        let rawTextW = ceil((title.stringValue as NSString).size(withAttributes: [.font: font]).width) + 4
+        let actualTextW = title.frame.width > 0 ? min(title.frame.width, rawTextW) : rawTextW
+        let textMinX = title.frame.minX
+        let textMaxX = textMinX + actualTextW
+        return local.x >= textMinX && local.x <= textMaxX
     }
 
     func startInlineEditing() {
@@ -2088,6 +2393,7 @@ private final class FileRowCell: NSTableCellView, NSTextFieldDelegate {
 
     func endInlineEditing(commit: Bool) {
         guard isInlineEditing else { return }
+        InlineRenameTracker.markEditingEnded()
         isInlineEditing = false
         isStartingEditing = false
         title.isEditable = false
@@ -2158,7 +2464,7 @@ private final class FileRowCell: NSTableCellView, NSTextFieldDelegate {
         guard let owner, bounds.height > 0, let window, window === owner.window else { return }
         let rowHeight = bounds.height
         let layout = owner.columnLayout
-        let dx = convert(NSPoint.zero, to: owner).x
+        let dx = convert(NSPoint.zero, to: owner.outlineView).x
 
         let iconSize = owner.iconSize
         let nameIconX: CGFloat = FileListView.nameIconX

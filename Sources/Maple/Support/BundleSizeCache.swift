@@ -7,7 +7,7 @@ final class BundleSizeCache {
     static let shared = BundleSizeCache()
 
     let cache = NSCache<NSURL, NSNumber>()
-    private var inFlight = Set<URL>()
+    private var pendingCallbacks: [URL: [(Int64) -> Void]] = [:]
     private let lock = NSLock()
 
     private init() {
@@ -48,7 +48,7 @@ final class BundleSizeCache {
         return total
     }
 
-    /// 异步获取包或目录大小：命中缓存立即回调；未命中则在全局队列异步计算，并在主线程回调更新。
+    /// 异步获取包或目录大小：命中缓存立即回调；未命中则在全局队列异步计算，并在主线程合并回调所有等待方。
     func requestSize(for url: URL, completion: @escaping (Int64) -> Void) {
         lock.lock()
         if let cached = cache.object(forKey: url as NSURL) {
@@ -56,22 +56,26 @@ final class BundleSizeCache {
             completion(cached.int64Value)
             return
         }
-        if inFlight.contains(url) {
+        if var callbacks = pendingCallbacks[url] {
+            callbacks.append(completion)
+            pendingCallbacks[url] = callbacks
             lock.unlock()
             return
         }
-        inFlight.insert(url)
+        pendingCallbacks[url] = [completion]
         lock.unlock()
 
         DispatchQueue.global(qos: .utility).async {
             let total = Self.calculateDirectorySize(at: url)
             self.lock.lock()
-            self.inFlight.remove(url)
+            let callbacks = self.pendingCallbacks.removeValue(forKey: url) ?? []
             self.cache.setObject(NSNumber(value: total), forKey: url as NSURL)
             self.lock.unlock()
 
             DispatchQueue.main.async {
-                completion(total)
+                for cb in callbacks {
+                    cb(total)
+                }
             }
         }
     }

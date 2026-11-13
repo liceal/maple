@@ -53,16 +53,9 @@ enum ListColumn: String, CaseIterable {
         }
     }
 
-    /// 拖拽改宽时该列允许的最大宽度：再宽也不会多出内容。
+    /// 拖拽改宽时该列允许的最大宽度（无上限限制）。
     var maxWidth: CGFloat {
-        switch self {
-        case .path: return 450
-        case .created, .modified: return 280
-        case .size: return 240
-        case .kind: return 200
-        case .owner, .group: return 240
-        case .duration: return 220
-        }
+        10000
     }
 
     /// 该列对应的排序字段（没有对应关系时返回 nil）。

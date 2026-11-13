@@ -34,8 +34,8 @@ final class FileIconView: NSView {
     private let swipeBadge = SwipeIndicatorBadge()
     private var sections: [FileSection] = []
 
-    /// 触发回退/前进所需的有效手指水平位移阈值（pt）。
-    private let swipeTriggerThreshold: CGFloat = 64
+    /// 触发回退/前进所需的有效手指水平位移阈值（pt，对标 Chrome 浏览器阻尼手感）。
+    private let swipeTriggerThreshold: CGFloat = 128
     private var badgeLeadingConstraint: NSLayoutConstraint!
     private var badgeCenterYConstraint: NSLayoutConstraint!
 
@@ -87,7 +87,7 @@ final class FileIconView: NSView {
         collection.onOpenItem = { [weak self] item in self?.onOpen?(item) }
         collection.onTriggerRename = { [weak self] indexPath in self?.startRename(at: indexPath) }
         collection.isPointInName = { [weak self] indexPath, point in
-            guard let self, let item = self.collection.item(at: indexPath) as? FileIconItem else { return true }
+            guard let self, let item = self.collection.item(at: indexPath) as? FileIconItem else { return false }
             return item.isPointInName(point, in: self.collection)
         }
         collection.onSelectionChanged = { [weak self] in
@@ -112,6 +112,10 @@ final class FileIconView: NSView {
         scroll.canSwipe = { [weak self] in
             guard let self else { return false }
             return (self.canSwipeBack?() ?? false) || (self.canSwipeForward?() ?? false)
+        }
+        scroll.canSwipeDirection = { [weak self] isBack in
+            guard let self else { return false }
+            return isBack ? (self.canSwipeBack?() ?? false) : (self.canSwipeForward?() ?? false)
         }
         scroll.onSwipeChange = { [weak self] totalFingerDX in
             self?.handleSwipeChange(totalFingerDX: totalFingerDX)
@@ -150,7 +154,7 @@ final class FileIconView: NSView {
         needsDisplay = true
     }
 
-    // MARK: - 触摸板丝滑左右滑动手势（右滑回退 / 左滑前进）
+    // MARK: - 触摸板丝滑左右滑动手势（右滑回退 / 左滑前进，Chrome 级阻尼与触发阈值）
 
     private func handleSwipeBegin() {
         collection.layer?.removeAllAnimations()
@@ -168,15 +172,14 @@ final class FileIconView: NSView {
             swipeBadge.alphaValue = 0
             return
         }
-        // 兼容「双指右滑后退」与「无前进历史时双指左滑后退」两种操作习惯
-        let isBack = (totalFingerDX >= 0) ? true : (!canFwd && canBack)
-        let isRightSlide = (totalFingerDX >= 0)
+        let isBack = (totalFingerDX >= 0)
+        let isRightSlide = isBack
         let allowed = isBack ? canBack : canFwd
         let absDX = abs(totalFingerDX)
 
-        // 1. 视图层跟随手指产生细腻的 1:1 阻尼平移，提供浏览器级跟手反馈
-        let maxVisualShift: CGFloat = allowed ? 52 : 12
-        let damping: CGFloat = allowed ? 0.42 : 0.10
+        // 1. 视图层跟随手指产生细腻的阻尼平移，提供浏览器级沉稳跟手反馈
+        let maxVisualShift: CGFloat = allowed ? 44 : 10
+        let damping: CGFloat = allowed ? 0.30 : 0.08
         let rawShift = absDX * damping
         let dampedShift = maxVisualShift * (1 - exp(-rawShift / max(1, maxVisualShift)))
         let signedShift = isRightSlide ? dampedShift : -dampedShift
@@ -184,7 +187,7 @@ final class FileIconView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         collection.layer?.transform = CATransform3DMakeTranslation(signedShift, 0, 0)
-        collection.layer?.opacity = allowed ? Float(max(0.86, 1.0 - (absDX / swipeTriggerThreshold) * 0.10)) : 1.0
+        collection.layer?.opacity = allowed ? Float(max(0.88, 1.0 - (absDX / swipeTriggerThreshold) * 0.08)) : 1.0
         CATransaction.commit()
 
         // 2. 浏览器同款边缘圆形回退/前进指示器（从小变大，透明度从浅变深）
@@ -201,12 +204,12 @@ final class FileIconView: NSView {
         swipeBadge.isHidden = false
         swipeBadge.configure(isBack: isBack, progress: progress, isArmed: ready)
         // 透明度从浅变深：0.0 渐进平滑过渡至 1.0
-        swipeBadge.alphaValue = min(1.0, max(0.0, pow(clamped, 0.92)))
+        swipeBadge.alphaValue = min(1.0, max(0.0, pow(clamped, 1.05)))
 
         let badgeD = SwipeIndicatorBadge.diameter
         let startMargin: CGFloat = 8
-        let maxTravel: CGFloat = 28
-        let currentTravel = min(maxTravel, absDX * 0.28)
+        let maxTravel: CGFloat = 26
+        let currentTravel = min(maxTravel, absDX * 0.20)
         if isRightSlide {
             badgeLeadingConstraint.constant = startMargin + currentTravel
         } else {
@@ -217,16 +220,16 @@ final class FileIconView: NSView {
     private func handleSwipeEnd(totalFingerDX: CGFloat, velocityX: CGFloat, cancelled: Bool) {
         let canBack = canSwipeBack?() ?? false
         let canFwd = canSwipeForward?() ?? false
-        let isBack = (totalFingerDX >= 0) ? true : (!canFwd && canBack)
-        let isRightSlide = (totalFingerDX >= 0)
+        let isBack = (totalFingerDX >= 0)
+        let isRightSlide = isBack
         let allowed = isBack ? canBack : canFwd
         let absDX = abs(totalFingerDX)
         let sameDirVelocity = isRightSlide ? velocityX : -velocityX
 
-        // 位移达标，或快速轻拂（位移过半且瞬时速度较快）均可触发
-        let triggered = !cancelled && allowed && (
+        // 位移达标，或较大行程快速轻拂方可触发（对标 Chrome 浏览器防误触手感）
+        let triggered = !cancelled && allowed && sameDirVelocity >= -1.5 && (
             absDX >= swipeTriggerThreshold ||
-            (absDX >= swipeTriggerThreshold * 0.50 && sameDirVelocity > 9.0)
+            (absDX >= swipeTriggerThreshold * 0.75 && sameDirVelocity > 18.0)
         )
 
         if triggered {
@@ -640,6 +643,17 @@ final class KeyCollectionView: NSCollectionView {
         super.setFrameSize(size)
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self),
+           let superview = self.superview {
+            let ptInEditor = editor.convert(point, from: superview)
+            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
+                return editor
+            }
+        }
+        return super.hitTest(point)
+    }
+
     override func mouseDown(with event: NSEvent) {
         pendingRenameWorkItem?.cancel()
         pendingRenameWorkItem = nil
@@ -647,7 +661,20 @@ final class KeyCollectionView: NSCollectionView {
         potentialRenamePath = nil
         dragStartWindowPoint = event.locationInWindow
 
+        let wasEditingBeforeClick: Bool
+        if let editor = window?.firstResponder as? NSTextView, editor.isDescendant(of: self) {
+            let ptInEditor = editor.convert(event.locationInWindow, from: nil)
+            if editor.bounds.insetBy(dx: -3, dy: -2).contains(ptInEditor) {
+                editor.mouseDown(with: event)
+                return
+            }
+            wasEditingBeforeClick = true
+        } else {
+            wasEditingBeforeClick = InlineRenameTracker.didEndDuring(event: event)
+        }
+
         window?.makeFirstResponder(self)
+        let didEndEditingOnThisClick = wasEditingBeforeClick || InlineRenameTracker.didEndDuring(event: event)
         onActivate?()
 
         let point = convert(event.locationInWindow, from: nil)
@@ -673,7 +700,7 @@ final class KeyCollectionView: NSCollectionView {
         let wasAlreadySingleSelected = (clickedPath != nil && selectionIndexPaths.count == 1 && selectionIndexPaths.contains(clickedPath!))
         let hitName: Bool
         if let path = clickedPath {
-            hitName = isPointInName?(path, point) ?? true
+            hitName = isPointInName?(path, point) ?? false
         } else {
             hitName = false
         }
@@ -686,7 +713,7 @@ final class KeyCollectionView: NSCollectionView {
             }
         }
 
-        if let path = clickedPath, wasAlreadySingleSelected, hitName, !event.modifierFlags.contains(.command), !event.modifierFlags.contains(.shift) {
+        if !didEndEditingOnThisClick, let path = clickedPath, wasAlreadySingleSelected, hitName, !event.modifierFlags.contains(.command), !event.modifierFlags.contains(.shift) {
             potentialRenamePath = path
         }
 
@@ -991,12 +1018,11 @@ final class FileIconItem: NSCollectionViewItem, NSTextFieldDelegate {
     // MARK: - 就地重命名（访达同款）
 
     func isPointInName(_ pointInCollection: NSPoint, in collection: NSCollectionView) -> Bool {
+        guard !isInlineEditing else { return false }
         let local = view.convert(pointInCollection, from: collection)
-        // 图标模式：点在顶部大图标上视为点击图标（用于打开或拖拽）；点在下方文字区域或胶囊上才视为点击文件名（就地重命名）
-        if iconContainer.frame.insetBy(dx: -4, dy: -4).contains(local) {
-            return false
-        }
-        return local.y >= iconContainer.frame.maxY || label.frame.insetBy(dx: -8, dy: -4).contains(local)
+        // 图标模式：仅点在下方文件名文字区域或胶囊上才视为点击文件名（就地重命名），点击图标或四周空白均不触发
+        let hitRect = textBubble.isHidden ? label.frame.insetBy(dx: -4, dy: -2) : textBubble.frame.insetBy(dx: -2, dy: -2)
+        return hitRect.contains(local)
     }
 
     func startInlineEditing() {
@@ -1059,6 +1085,7 @@ final class FileIconItem: NSCollectionViewItem, NSTextFieldDelegate {
 
     func endInlineEditing(commit: Bool) {
         guard isInlineEditing else { return }
+        InlineRenameTracker.markEditingEnded()
         isInlineEditing = false
         isStartingEditing = false
         label.isEditable = false
@@ -1191,24 +1218,31 @@ final class IconSectionHeader: NSView {
 final class IconScrollView: NSScrollView {
 
     var canSwipe: (() -> Bool)?
+    var canSwipeDirection: ((_ isBack: Bool) -> Bool)?
     var onSwipeBegin: (() -> Void)?
     var onSwipeChange: ((CGFloat) -> Void)?
     var onSwipeEnd: ((_ totalFingerDX: CGFloat, _ velocityX: CGFloat, _ cancelled: Bool) -> Void)?
 
     private enum GestureMode {
         case undecided
-        case verticalScroll
+        case nativeScroll
         case horizontalSwipe
     }
+
+    /// 起手防误触死区（pt）：手指明确横向滑过该距离且角度纯粹才进入前进/后退手势
+    private static let swipeActivationDeadzone: CGFloat = 22
 
     private var mode: GestureMode = .undecided
     private var accumulatedFingerDX: CGFloat = 0
     private var accumulatedFingerDY: CGFloat = 0
+    private var swipeStartOffsetX: CGFloat = 0
     private var lastVelocityX: CGFloat = 0
     private var suppressMomentum: Bool = false
+    private var atLeftEdgeAtStart: Bool = true
+    private var atRightEdgeAtStart: Bool = true
 
     override func scrollWheel(with event: NSEvent) {
-        // 若当前视图禁止左右滑动前进/后退（如标签视图、「所有标签…」等），直接走原生纵向滚动
+        // 若当前视图禁止左右滑动前进/后退（如标签视图、「所有标签…」等），直接走原生滚动
         if let canSwipe, !canSwipe() {
             mode = .undecided
             suppressMomentum = false
@@ -1232,8 +1266,10 @@ final class IconScrollView: NSScrollView {
             mode = .undecided
             accumulatedFingerDX = 0
             accumulatedFingerDY = 0
+            swipeStartOffsetX = 0
             lastVelocityX = 0
             suppressMomentum = false
+            updateHorizontalEdgeStateAtStart()
         }
 
         // 将滚动增量还原为物理手指在触摸板上的真实位移方向：
@@ -1249,20 +1285,43 @@ final class IconScrollView: NSScrollView {
             if mode == .undecided {
                 let absX = abs(accumulatedFingerDX)
                 let absY = abs(accumulatedFingerDY)
-                // 起手一旦明显偏水平（> 4pt 且水平分量大于垂直分量 1.15 倍），立即锁定为横向滑动手势
-                if absX > 4 || absY > 4 {
-                    if absX > absY * 1.15 {
-                        mode = .horizontalSwipe
-                        suppressMomentum = true
-                        onSwipeBegin?()
-                    } else {
-                        mode = .verticalScroll
+
+                // 1. 若存在可水平滚动的内容（如宽列表），且当前手势方向是在正常滚动内容，则立即交由原生滚动
+                if hasHorizontallyScrollableContent {
+                    if accumulatedFingerDX > 3 && !atLeftEdgeAtStart {
+                        mode = .nativeScroll
+                    } else if accumulatedFingerDX < -3 && !atRightEdgeAtStart {
+                        mode = .nativeScroll
+                    }
+                }
+
+                // 2. 起手一旦出现明显纵向分量，立即锁定为原生滚动，绝不抢占上下浏览
+                if mode == .undecided {
+                    if absY > 8 && absY > absX * 0.75 {
+                        mode = .nativeScroll
+                    } else if absX >= Self.swipeActivationDeadzone {
+                        if absX > absY * 2.0 {
+                            let isBack = (accumulatedFingerDX >= 0)
+                            let edgeAllows = !hasHorizontallyScrollableContent
+                                || (isBack ? atLeftEdgeAtStart : atRightEdgeAtStart)
+                            if edgeAllows {
+                                mode = .horizontalSwipe
+                                swipeStartOffsetX = accumulatedFingerDX
+                                suppressMomentum = true
+                                onSwipeBegin?()
+                            } else {
+                                mode = .nativeScroll
+                            }
+                        } else {
+                            mode = .nativeScroll
+                        }
                     }
                 }
             }
 
             if mode == .horizontalSwipe {
-                onSwipeChange?(accumulatedFingerDX)
+                let effectiveDX = accumulatedFingerDX - swipeStartOffsetX
+                onSwipeChange?(effectiveDX)
                 return
             }
         }
@@ -1270,7 +1329,8 @@ final class IconScrollView: NSScrollView {
         if event.phase == .ended || event.phase == .cancelled {
             if mode == .horizontalSwipe {
                 let cancelled = (event.phase == .cancelled)
-                onSwipeEnd?(accumulatedFingerDX, lastVelocityX, cancelled)
+                let effectiveDX = accumulatedFingerDX - swipeStartOffsetX
+                onSwipeEnd?(effectiveDX, lastVelocityX, cancelled)
                 mode = .undecided
                 return
             }
@@ -1278,6 +1338,22 @@ final class IconScrollView: NSScrollView {
         }
 
         super.scrollWheel(with: event)
+    }
+
+    private var hasHorizontallyScrollableContent: Bool {
+        guard hasHorizontalScroller, let doc = documentView else { return false }
+        return doc.frame.width > contentView.bounds.width + 1.0
+    }
+
+    private func updateHorizontalEdgeStateAtStart() {
+        guard hasHorizontallyScrollableContent, let doc = documentView else {
+            atLeftEdgeAtStart = true
+            atRightEdgeAtStart = true
+            return
+        }
+        let clipBounds = contentView.bounds
+        atLeftEdgeAtStart = clipBounds.minX <= 1.0
+        atRightEdgeAtStart = clipBounds.maxX >= doc.frame.width - 1.0
     }
 }
 

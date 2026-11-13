@@ -966,12 +966,18 @@ final class PaneView: NSView {
                                           sort: sortField,
                                           ascending: ascending,
                                           group: groupMode)
-        listView.update(sections: sections)
-        iconView.update(sections: sections)
-        if isTagView || isCleared {
-            columnView.refreshWithCustomItems(items, sort: sortField, ascending: ascending)
-        } else {
-            columnView.refresh(root: currentURL, sort: sortField, ascending: ascending)
+        // 仅刷新当前可见的视图模式，避免后台隐藏视图重复读取磁盘或重排大量单元格
+        switch viewMode {
+        case .list:
+            listView.update(sections: sections)
+        case .icons:
+            iconView.update(sections: sections)
+        case .columns:
+            if isTagView || isCleared {
+                columnView.refreshWithCustomItems(items, sort: sortField, ascending: ascending)
+            } else {
+                columnView.refresh(root: currentURL, sort: sortField, ascending: ascending)
+            }
         }
         updateStatus()
     }
@@ -997,8 +1003,12 @@ final class PaneView: NSView {
         pathBar.isColumnMode = viewMode == .columns && !isTagView
         sizeSlider.configure(for: viewMode)
         switch viewMode {
-        case .list: listView.focus()
-        case .icons: iconView.focus()
+        case .list:
+            listView.update(sections: sections)
+            listView.focus()
+        case .icons:
+            iconView.update(sections: sections)
+            iconView.focus()
         case .columns:
             if isTagView || isCleared {
                 columnView.refreshWithCustomItems(items, sort: sortField, ascending: ascending)
@@ -1034,9 +1044,27 @@ final class PaneView: NSView {
     private func updateStatus() {
         // 分栏模式下统计当前活动列（标签视图下直接统计标签匹配项数）
         let count = (viewMode == .columns && !isTagView && !isCleared) ? columnView.activeColumnItemCount : items.count
-        let selected = currentSelection().count
+        let selection = currentSelection()
+        let selected = selection.count
         if selected > 0 {
-            statusLeft.stringValue = "\(count) 个项目，已选 \(selected) 个"
+            var totalBytes: Int64 = 0
+            var hasKnownSize = false
+            for item in selection {
+                if !item.isDirectory {
+                    if item.size >= 0 {
+                        totalBytes += item.size
+                        hasKnownSize = true
+                    }
+                } else if let cached = BundleSizeCache.shared.size(for: item.url) {
+                    totalBytes += cached
+                    hasKnownSize = true
+                }
+            }
+            if hasKnownSize {
+                statusLeft.stringValue = "\(count) 个项目，已选 \(selected) 个（\(Format.bytes(totalBytes))）"
+            } else {
+                statusLeft.stringValue = "\(count) 个项目，已选 \(selected) 个"
+            }
         } else {
             statusLeft.stringValue = "\(count) 个项目"
         }

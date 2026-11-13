@@ -758,13 +758,17 @@ enum Format {
     static let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
         formatter.isAdaptive = true
         return formatter
     }()
 
     static func bytes(_ value: Int64) -> String {
-        byteFormatter.string(fromByteCount: value)
+        let v = max(0, value)
+        if v < 1024 {
+            return "\(v) B"
+        }
+        return byteFormatter.string(fromByteCount: v)
     }
 
     private static let timeOnlyFormatter: DateFormatter = {
