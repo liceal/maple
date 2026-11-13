@@ -2329,7 +2329,12 @@ final class PaneView: NSView {
     }
 
     private func makeOpenWithSubmenu(for item: FileItem) -> NSMenu? {
-        let appURLs = NSWorkspace.shared.urlsForApplications(toOpen: item.url)
+        let appURLs: [URL]
+        if #available(macOS 12.0, *) {
+            appURLs = NSWorkspace.shared.urlsForApplications(toOpen: item.url)
+        } else {
+            appURLs = (LSCopyApplicationURLsForURL(item.url as CFURL, .all)?.takeRetainedValue() as? [URL]) ?? []
+        }
         guard !appURLs.isEmpty else { return nil }
         let submenu = NSMenu(title: "打开方式".localized)
         submenu.autoenablesItems = false
