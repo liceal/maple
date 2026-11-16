@@ -1848,7 +1848,7 @@ final class FilePreviewColumn: NSView {
             iconTrailingConstraint.constant = 0
             iconHeightConstraint.constant = 176
         } else {
-            let icon = NSWorkspace.shared.icon(forFile: item.url.path)
+            let icon = IconCache.preferRetinaRepresentations(NSWorkspace.shared.icon(forFile: item.url.path))
             icon.size = NSSize(width: 128, height: 128)
             iconView.image = icon
             iconLeadingConstraint.constant = 18

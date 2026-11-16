@@ -174,12 +174,21 @@
                 </a>
             </div>
 
-            <!-- 星露谷公告栏木牌终端框 -->
-            <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#fef8ed] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] text-xs font-mono text-[#431f0a]">
-                <span class="text-[#c2410c] font-black">$</span>
-                <span id="brew-cmd">brew install liceal/tap/maple</span>
-                <button onclick="copyBrewCmd()" class="px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#dfc199] border border-[#733c19] text-[11px] font-sans font-bold text-[#431f0a] shadow-[0_1px_0_#54270f] transition-all">
-                    <span id="copy-text" data-i18n="copy_btn">复制</span>
+            <!-- 星露谷公告栏木牌终端框 + 右侧小问号帮助按钮 -->
+            <div class="inline-flex flex-wrap items-center justify-center gap-2 max-w-full">
+                <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#fef8ed] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] text-xs font-mono text-[#431f0a] max-w-full overflow-hidden">
+                    <span class="text-[#c2410c] font-black shrink-0">$</span>
+                    <span id="brew-cmd" class="truncate">curl -fsSL https://liceal.github.io/maple/install.sh | bash</span>
+                    <button onclick="copyCmd('brew-cmd', 'copy-text')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#dfc199] border border-[#733c19] text-[11px] font-sans font-bold text-[#431f0a] shadow-[0_1px_0_#54270f] transition-all">
+                        <span id="copy-text" data-i18n="copy_btn">复制</span>
+                    </button>
+                </div>
+
+                <!-- 问号帮助按钮（点击弹出修复流程与工具弹窗） -->
+                <button onclick="openHelpModal()" data-i18n-title="help_btn_tip" title="首次打开提示身份不明或已损坏？点击查看解决流程与工具"
+                        class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#fef8ed] hover:bg-[#fff9f0] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] active:translate-y-[2px] active:shadow-[0_1px_0_#4d240c] transition text-xs font-bold text-[#54270f] cursor-pointer select-none">
+                    <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-[#c2531a] text-[#fff9f0] text-[11px] font-black leading-none">?</span>
+                    <span data-i18n="help_btn_label" class="text-[11px]">首次打不开</span>
                 </button>
             </div>
         </section>
@@ -240,6 +249,63 @@
         </a>
     </footer>
 
+    <!-- =================== 首次打开修复流程与工具弹窗 (默认隐藏，保持主页 100% 纯净) =================== -->
+    <div id="help-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-[#2b1305]/45 backdrop-blur-[2px]" onclick="if(event.target===this) closeHelpModal()">
+        <div class="w-full max-w-lg rounded-xl bg-[#fef8ed] border-2 border-[#733c19] shadow-[0_6px_0_#4d240c] p-5 text-left text-[#431f0a] relative space-y-3.5">
+            <!-- 顶部标题与关闭按钮 -->
+            <div class="flex items-center justify-between border-b border-[#733c19]/20 pb-2.5">
+                <div class="flex items-center gap-2">
+                    <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-[#c2531a] text-[#fff9f0] text-xs font-black">!</span>
+                    <h2 data-i18n="modal_title" class="text-sm font-black text-[#54270f]">首次打开提示「身份不明」或「已损坏」解决流程</h2>
+                </div>
+                <button onclick="closeHelpModal()" class="w-6 h-6 rounded-md bg-[#ecd2af] hover:bg-[#dfc199] border border-[#733c19] text-xs font-black text-[#431f0a] flex items-center justify-center transition">✕</button>
+            </div>
+
+            <p data-i18n="modal_intro" class="text-[11.5px] text-[#733c19] leading-relaxed font-medium">
+                由于 Maple 是免费开源应用，暂未购买 Apple 付费公证证书，macOS 首次打开时可能会触发安全拦截。按以下任一方式即可解决：
+            </p>
+
+            <!-- 流程一：DMG 图形化两步法 + 修复工具 -->
+            <div class="p-3 rounded-lg bg-[#f6e6cc]/75 border border-[#8f5024]/35 space-y-2">
+                <div class="flex items-center justify-between gap-2">
+                    <span data-i18n="modal_s1_title" class="text-xs font-black text-[#54270f]">方式一：按顺序点击通过（内置修复工具）</span>
+                    <a href="首次打开修复.command" download="首次打开修复.command" class="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#c2531a] hover:bg-[#d76122] text-[#fff9f0] border border-[#54220b] shadow-[0_2px_0_#3a1506] text-[11px] font-bold transition">
+                        <span>⬇️</span>
+                        <span data-i18n="modal_dl_tool">下载修复工具</span>
+                    </a>
+                </div>
+                <div class="text-[11.5px] text-[#5e2d10] leading-relaxed space-y-1">
+                    <p data-i18n="modal_s1_p1">1. <b>打开 DMG</b>：若双击 .dmg 被拦截，请在「下载」中<b>右键（或按住 Control）点击 .dmg → 选择「打开」</b>；</p>
+                    <p data-i18n="modal_s1_p2">2. <b>拖入安装</b>：将左侧 Maple 拖入右侧 Applications 文件夹；</p>
+                    <p data-i18n="modal_s1_p3">3. <b>一键修复</b>：<b>右键点击 DMG 底部的「首次打开修复」→ 选择「打开」</b>，即可自动配置权限并启动 Maple！</p>
+                </div>
+            </div>
+
+            <!-- 流程二：一行命令全自动免拦截安装 -->
+            <div class="p-3 rounded-lg bg-[#f6e6cc]/75 border border-[#8f5024]/35 space-y-1.5">
+                <div data-i18n="modal_s2_title" class="text-xs font-black text-[#54270f]">方式二：终端一键免拦截安装（全程 0 弹窗 · 最省心）</div>
+                <p data-i18n="modal_s2_desc" class="text-[11px] text-[#683315]">打开系统自带的「终端 (Terminal)」，复制以下命令回车，自动下载安装并放行：</p>
+                <div class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-[#2b180c] text-[#fce8c8] font-mono text-[11px]">
+                    <div class="truncate"><span class="text-[#e59849] select-none">$ </span><span id="modal-curl-cmd">curl -fsSL https://liceal.github.io/maple/install.sh | bash</span></div>
+                    <button onclick="copyCmd('modal-curl-cmd', 'copy-modal-curl')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#f7dfbe] text-[#431f0a] font-sans font-bold text-[10.5px] transition">
+                        <span id="copy-modal-curl" data-i18n="copy_btn">复制</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 流程三：已拖入应用程序，一行命令单独解除拦截 -->
+            <div class="p-3 rounded-lg bg-[#f6e6cc]/75 border border-[#8f5024]/35 space-y-1.5">
+                <div data-i18n="modal_s3_title" class="text-xs font-black text-[#54270f]">方式三：已安装但提示「已损坏」？一行命令放行</div>
+                <div class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-[#2b180c] text-[#fce8c8] font-mono text-[11px]">
+                    <div class="truncate"><span class="text-[#e59849] select-none">$ </span><span id="modal-xattr-cmd">xattr -cr /Applications/Maple.app</span></div>
+                    <button onclick="copyCmd('modal-xattr-cmd', 'copy-modal-xattr')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#f7dfbe] text-[#431f0a] font-sans font-bold text-[10.5px] transition">
+                        <span id="copy-modal-xattr" data-i18n="copy_btn">复制</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 多语言字典与动态切换系统 -->
     <script>
         const i18n = {
@@ -252,6 +318,18 @@
                 btn_intel_sub: 'Intel 处理器 · 64 位 x86',
                 copy_btn: '复制',
                 copied: '已复制!',
+                help_btn_label: '首次打不开',
+                help_btn_tip: '首次打开提示身份不明或已损坏？点击查看解决流程与工具',
+                modal_title: '首次打开提示「身份不明」或「已损坏」解决流程',
+                modal_intro: '由于 Maple 是免费开源应用，暂未购买 Apple 付费公证证书，macOS 首次打开时可能会触发安全拦截。按以下任一方式即可解决：',
+                modal_s1_title: '方式一：按顺序点击通过（内置修复工具）',
+                modal_dl_tool: '下载修复工具',
+                modal_s1_p1: '1. 打开 DMG：若双击 .dmg 被拦截，请在「下载」中右键（或按住 Control）点击 .dmg → 选择「打开」；',
+                modal_s1_p2: '2. 拖入安装：将左侧 Maple 拖入右侧 Applications 文件夹；',
+                modal_s1_p3: '3. 一键修复：右键点击 DMG 底部的「首次打开修复」→ 选择「打开」，即可自动配置权限并启动 Maple！',
+                modal_s2_title: '方式二：终端一键免拦截安装（全程 0 弹窗 · 最省心）',
+                modal_s2_desc: '打开系统自带的「终端 (Terminal)」，复制以下命令回车，自动下载安装并放行：',
+                modal_s3_title: '方式三：已安装但提示「已损坏」？一行命令放行',
                 desc_quote: '“像秋日清晨般宁静而敏捷，做 Mac 上最称手的原生文件伴侣。”',
                 feat_native_title: '纯粹原生',
                 feat_native_desc: '原生访达的操作记忆，不露痕迹地融入你的 Mac。',
@@ -273,6 +351,18 @@
                 btn_intel_sub: 'Intel Processor · 64-bit x86',
                 copy_btn: 'Copy',
                 copied: 'Copied!',
+                help_btn_label: "Can't Open?",
+                help_btn_tip: 'macOS says Unidentified Developer or Damaged? Click for fix guide & tool',
+                modal_title: 'How to Open When Blocked by macOS Gatekeeper',
+                modal_intro: 'Because Maple is free & open-source without a paid Apple notarization certificate, macOS may block its first launch. Follow any method below:',
+                modal_s1_title: 'Method 1: Step-by-Step Click Fix (Built-in Tool)',
+                modal_dl_tool: 'Download Fix Tool',
+                modal_s1_p1: '1. Open DMG: If double-clicking .dmg is blocked, right-click (or Control-click) the .dmg file and choose "Open";',
+                modal_s1_p2: '2. Install: Drag Maple into the Applications folder;',
+                modal_s1_p3: '3. One-Click Fix: Right-click "首次打开修复" at the bottom of the DMG and choose "Open" to unlock and launch Maple!',
+                modal_s2_title: 'Method 2: One-Line Terminal Auto-Install (Zero Popups)',
+                modal_s2_desc: 'Open Terminal, paste the command below and press Return to auto-download, install and unlock:',
+                modal_s3_title: 'Method 3: Already Installed? One-Line Terminal Unlock',
                 desc_quote: '“Quiet and nimble as an autumn morning. A native file companion crafted for Mac.”',
                 feat_native_title: 'Pure Native',
                 feat_native_desc: 'Familiar Finder muscle memory, seamlessly woven into your Mac.',
@@ -294,6 +384,18 @@
                 btn_intel_sub: 'Intel 處理器 · 64 位元 x86',
                 copy_btn: '複製',
                 copied: '已複製!',
+                help_btn_label: '首次打不開',
+                help_btn_tip: '首次打開提示身份不明或已損壞？點擊查看解決流程與工具',
+                modal_title: '首次打開提示「身份不明」或「已損壞」解決流程',
+                modal_intro: '由於 Maple 是免費開源應用，暫未購買 Apple 付費公證憑證，macOS 首次打開時可能會觸發安全攔截。按以下任一方式即可解決：',
+                modal_s1_title: '方式一：按順序點擊通過（內建修復工具）',
+                modal_dl_tool: '下載修復工具',
+                modal_s1_p1: '1. 打開 DMG：若雙擊 .dmg 被攔截，請在「下載項目」中右鍵（或按住 Control）點擊 .dmg → 選擇「打開」；',
+                modal_s1_p2: '2. 拖入安裝：將左側 Maple 拖入右側 Applications 資料夾；',
+                modal_s1_p3: '3. 一鍵修復：右鍵點擊 DMG 底部的「首次打開修復」→ 選擇「打開」，即可自動配置權限並啟動 Maple！',
+                modal_s2_title: '方式二：終端機一鍵免攔截安裝（全程 0 彈窗 · 最省心）',
+                modal_s2_desc: '打開系統內建的「終端機 (Terminal)」，複製以下指令並按 Enter，自動下載安裝並放行：',
+                modal_s3_title: '方式三：已安裝但提示「已損壞」？一行指令放行',
                 desc_quote: '「如秋日晨曦般寧靜而敏捷，為 Mac 打造最稱手的原生檔案伴侶。」',
                 feat_native_title: '純粹原生',
                 feat_native_desc: '原生訪達的操作記憶，不露痕跡地融入你的 Mac。',
@@ -315,6 +417,18 @@
                 btn_intel_sub: 'Intel プロセッサ · 64ビット x86',
                 copy_btn: 'コピー',
                 copied: 'コピー完了!',
+                help_btn_label: '開けない場合',
+                help_btn_tip: '初回起動時にブロックされる場合の解決手順とツール',
+                modal_title: '初回起動時に「開発元が未確認」「壊れている」と表示される場合',
+                modal_intro: 'Maple は無料のオープンソースアプリであり、有料の Apple 公証証明書を使用していないため、初回起動時に保護機能が働く場合があります。以下の方法で解決できます：',
+                modal_s1_title: '方法1：順番にクリックして許可（修復ツール内蔵）',
+                modal_dl_tool: '修復ツールを入手',
+                modal_s1_p1: '1. DMGを開く：.dmg を右クリック（または Control+クリック）して「開く」を選択します。',
+                modal_s1_p2: '2. インストール：Maple を Applications フォルダへドラッグします。',
+                modal_s1_p3: '3. ワンクリック修復：DMG下部の「首次打开修复」を右クリックして「開く」を選ぶと、自動的に制限が解除され起動します！',
+                modal_s2_title: '方法2：ターミナルで1行自動インストール（警告なし・推奨）',
+                modal_s2_desc: '「ターミナル (Terminal)」を開き、以下のコマンドを貼り付けて Enter を押します：',
+                modal_s3_title: '方法3：インストール済みで開けない場合の解除コマンド',
                 desc_quote: '「秋の朝のように静かで俊敏。Mac のための純国産ネイティブファイル管理。」',
                 feat_native_title: '純粋なネイティブ',
                 feat_native_desc: 'Finder の直感的な操作感を継承し、Mac に自然と溶け込む。',
@@ -562,18 +676,37 @@
                 .catch(() => {});
         }
 
-        function copyBrewCmd() {
-            const cmd = document.getElementById('brew-cmd').textContent;
-            navigator.clipboard.writeText(cmd).then(() => {
-                const text = document.getElementById('copy-text');
+        function openHelpModal() {
+            const modal = document.getElementById('help-modal');
+            if (!modal) return;
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function closeHelpModal() {
+            const modal = document.getElementById('help-modal');
+            if (!modal) return;
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeHelpModal();
+        });
+
+        function copyCmd(cmdId, labelId) {
+            const cmdEl = document.getElementById(cmdId);
+            const textEl = document.getElementById(labelId);
+            if (!cmdEl || !textEl) return;
+            navigator.clipboard.writeText(cmdEl.textContent).then(() => {
                 let lang = 'zh-CN';
                 try { lang = localStorage.getItem('maple_lang') || 'zh-CN'; } catch(e) {}
                 const data = i18n[lang] || i18n['zh-CN'];
-                text.textContent = data.copied || '已复制!';
-                text.className = 'text-green-800 font-bold';
+                textEl.textContent = data.copied || '已复制!';
+                textEl.className = 'text-green-800 font-bold';
                 setTimeout(() => {
-                    text.textContent = data.copy_btn || '复制';
-                    text.className = '';
+                    textEl.textContent = data.copy_btn || '复制';
+                    textEl.className = '';
                 }, 1500);
             });
         }

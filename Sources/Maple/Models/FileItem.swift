@@ -271,11 +271,22 @@ final class IconCache {
         return desc
     }
 
+    /// 过滤掉第三方应用 .icns 中可能损坏的低清 @1x 图层（例如将 16x16 误塞入 128pt @1x 槽位），仅保留高清 @2x Retina 图层
+    static func preferRetinaRepresentations(_ icon: NSImage) -> NSImage {
+        let hiRes = icon.representations.filter { $0.pixelsWide >= Int($0.size.width * 2) }
+        guard !hiRes.isEmpty, hiRes.count < icon.representations.count else { return icon }
+        let clean = NSImage(size: icon.size)
+        for rep in hiRes {
+            clean.addRepresentation(rep)
+        }
+        return clean
+    }
+
     func icon(for item: FileItem) -> NSImage {
         if item.isPackage {
             let key = item.url.path as NSString
             if let hit = cache.object(forKey: key) { return hit }
-            let icon = NSWorkspace.shared.icon(forFile: item.url.path)
+            let icon = Self.preferRetinaRepresentations(NSWorkspace.shared.icon(forFile: item.url.path))
             cache.setObject(icon, forKey: key)
             return icon
         }
@@ -288,12 +299,13 @@ final class IconCache {
         let key = (ext.isEmpty ? item.name.lowercased() : ext) as NSString
         if let hit = cache.object(forKey: key) { return hit }
 
-        let icon: NSImage
+        let rawIcon: NSImage
         if !ext.isEmpty, let type = UTType(filenameExtension: ext) {
-            icon = NSWorkspace.shared.icon(for: type)
+            rawIcon = NSWorkspace.shared.icon(for: type)
         } else {
-            icon = NSWorkspace.shared.icon(forFile: item.url.path)
+            rawIcon = NSWorkspace.shared.icon(forFile: item.url.path)
         }
+        let icon = Self.preferRetinaRepresentations(rawIcon)
         cache.setObject(icon, forKey: key)
         return icon
     }

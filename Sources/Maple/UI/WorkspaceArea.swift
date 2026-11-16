@@ -508,6 +508,7 @@ final class WorkspaceArea: NSView {
         // 回收多余的窗格
         while panes.count > needed {
             let pane = panes.removeLast()
+            pane.prepareForRemoval()
             pane.removeFromSuperview()
         }
         // 补齐缺少的窗格

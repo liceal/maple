@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maple 安装说明</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+            background: #f5f6f8;
+            color: #1d1d1f;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 24px;
+        }
+        .card {
+            background: #ffffff;
+            max-width: 520px;
+            width: 100%;
+            border-radius: 18px;
+            padding: 32px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+            border: 1px solid rgba(0, 0, 0, 0.06);
+        }
+        h1 {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #1d1d1f;
+        }
+        .sub {
+            font-size: 13px;
+            color: #6e6e73;
+            line-height: 1.6;
+            margin-bottom: 24px;
+        }
+        .step {
+            background: #f9fafc;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 16px 18px;
+            margin-bottom: 14px;
+        }
+        .step-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: #1d1d1f;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .badge {
+            background: #0071e3;
+            color: #fff;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 99px;
+            font-weight: 600;
+        }
+        .step-desc {
+            font-size: 13px;
+            color: #424245;
+            line-height: 1.7;
+        }
+        .highlight {
+            color: #c2531a;
+            font-weight: 600;
+        }
+        .cmd-box {
+            margin-top: 10px;
+            background: #1e2026;
+            color: #f3c878;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .copy-btn {
+            background: #ffffff;
+            color: #1d1d1f;
+            border: none;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .copy-btn:hover { background: #e8e8ed; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🍁 Maple 安装与首次打开说明</h1>
+        <p class="sub">由于 Maple 是免费开源软件，暂未购买 Apple 付费开发者公证证书，首次打开若弹出「无法验证开发者」或「已损坏」，按以下两步点击即可解决：</p>
+
+        <div class="step">
+            <div class="step-title"><span class="badge">第 1 步</span> 拖入安装</div>
+            <div class="step-desc">
+                在安装包窗口中，将左侧的 <b>Maple</b> 图标拖入右侧的 <b>Applications</b> 文件夹。
+            </div>
+        </div>
+
+        <div class="step">
+            <div class="step-title"><span class="badge">第 2 步</span> 首次打开修复（点点即可通过）</div>
+            <div class="step-desc">
+                1. 回到安装包窗口，找到下方的 <span class="highlight">「首次打开修复」</span> 图标；<br>
+                2. <b>按住键盘 Control 键（或鼠标右键）</b>点击它，在菜单中选择 <span class="highlight">「打开」</span>；<br>
+                3. 在弹出的确认框中再次点击 <span class="highlight">「打开」</span>，即可自动完成权限配置并直接启动 Maple！
+            </div>
+        </div>
+
+        <div class="step" style="margin-bottom: 0;">
+            <div class="step-title"><span class="badge" style="background:#6e6e73;">备选方式</span> 终端一行命令放行</div>
+            <div class="step-desc">
+                您也可以打开系统自带的「终端 (Terminal)」，复制下方命令粘贴并回车：
+                <div class="cmd-box">
+                    <span id="cmd">xattr -cr /Applications/Maple.app</span>
+                    <button class="copy-btn" onclick="copyText(this)">复制命令</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        function copyText(btn) {
+            navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(() => {
+                btn.textContent = '已复制 ✓';
+                setTimeout(() => btn.textContent = '复制命令', 1500);
+            });
+        }
+    </script>
+</body>
+</html>

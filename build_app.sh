@@ -10,18 +10,18 @@ export LC_ALL=en_US.UTF-8
 GIT_LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git tag -l "v*" --sort=-v:refname 2>/dev/null | head -n 1 || true)
 DETECTED_VERSION=$(echo "$GIT_LATEST_TAG" | sed -E 's/^v//')
 
-VERSION="${1:-${MAPLE_VERSION:-${DETECTED_VERSION:-1.0.9}}}"
+VERSION="${1:-${MAPLE_VERSION:-${DETECTED_VERSION:-1.1.0}}}"
 echo "→ 准备构建 Maple v${VERSION} (来源: ${1:+入参}${MAPLE_VERSION:+环境变量}${DETECTED_VERSION:+Git Tag: $GIT_LATEST_TAG}) ..."
 
-# 检测是否有可用的 Apple Developer / Developer ID 签名证书
+# 仅检测可用于对外分发的 Developer ID Application 证书（切勿使用本机调试专用的 Apple Development 证书签名分发包或 DMG，否则会导致 DMG 本身在其他电脑上被拦截）
 if [ -z "$SIGN_IDENTITY" ]; then
-    SIGN_IDENTITY=$(security find-identity -p codesigning -v 2>/dev/null | grep -E "Developer ID Application|Apple Development" | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    SIGN_IDENTITY=$(security find-identity -p codesigning -v 2>/dev/null | grep -E "Developer ID Application" | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
 fi
 
 if [ -n "$SIGN_IDENTITY" ]; then
-    echo "✓ 自动检测到 Apple 代码签名证书: $SIGN_IDENTITY"
+    echo "✓ 自动检测到 Apple Developer ID 分发证书: $SIGN_IDENTITY"
 else
-    echo "⚠️ 未检测到 Apple 开发者证书，将使用 Ad-Hoc 本地签名 (-)"
+    echo "ℹ️ 未检测到 Developer ID 分发证书，将使用标准 Ad-Hoc 签名 (-)，且不对 DMG 容器附加未公证签名"
     SIGN_IDENTITY="-"
 fi
 
@@ -42,21 +42,26 @@ clean_xattrs_and_sign() {
     # 彻底清除所有文件与目录的扩展属性（包括 com.apple.FinderInfo, com.apple.provenance, com.apple.quarantine 等）
     xattr -c -r "$target" 2>/dev/null || true
 
-    local entitlements_args=()
-    if [ -f "Resources/Maple.entitlements" ]; then
-        entitlements_args=(--entitlements "Resources/Maple.entitlements")
+    if [ "$SIGN_IDENTITY" = "-" ]; then
+        # Ad-Hoc 签名：不启用未公证的 Hardened Runtime，避免其他 Mac 因无公证票据而拦截更严
+        if [ -d "$target/Contents/Resources/Maple.app" ]; then
+            xattr -c -r "$target/Contents/Resources/Maple.app" 2>/dev/null || true
+            codesign --force --deep --sign - "$target/Contents/Resources/Maple.app"
+        fi
+        codesign --force --deep --sign - "$target"
+    else
+        local entitlements_args=()
+        if [ -f "Resources/Maple.entitlements" ]; then
+            entitlements_args=(--entitlements "Resources/Maple.entitlements")
+        fi
+        if [ -d "$target/Contents/Resources/Maple.app" ]; then
+            xattr -c -r "$target/Contents/Resources/Maple.app" 2>/dev/null || true
+            codesign --force --deep --options runtime "${entitlements_args[@]}" --sign "$SIGN_IDENTITY" "$target/Contents/Resources/Maple.app" 2>/dev/null || \
+            codesign --force --deep --sign "$SIGN_IDENTITY" "$target/Contents/Resources/Maple.app"
+        fi
+        codesign --force --deep --options runtime "${entitlements_args[@]}" --sign "$SIGN_IDENTITY" "$target" 2>/dev/null || \
+        codesign --force --deep --sign "$SIGN_IDENTITY" "$target"
     fi
-
-    # 如果存在内嵌的 Maple.app，先给内嵌的 Maple.app 深度签名
-    if [ -d "$target/Contents/Resources/Maple.app" ]; then
-        xattr -c -r "$target/Contents/Resources/Maple.app" 2>/dev/null || true
-        codesign --force --deep --options runtime "${entitlements_args[@]}" --sign "$SIGN_IDENTITY" "$target/Contents/Resources/Maple.app" 2>/dev/null || \
-        codesign --force --deep --sign "$SIGN_IDENTITY" "$target/Contents/Resources/Maple.app"
-    fi
-
-    # 签名外层应用
-    codesign --force --deep --options runtime "${entitlements_args[@]}" --sign "$SIGN_IDENTITY" "$target" 2>/dev/null || \
-    codesign --force --deep --sign "$SIGN_IDENTITY" "$target"
 
     # 严苛校验代码签名完整性
     codesign --verify --deep --strict "$target" 2>/dev/null || true
@@ -204,9 +209,33 @@ build_dmg() {
     # 1. 确保最新 Retina 144 DPI 背景图已就绪
     python3 Resources/generate_dmg_background.py
 
-    # 2. 放入 Maple.app 并深度清除隔离属性与重新签名
+    # 2. 放入 Maple.app 与辅助修复脚本/说明文件，并深度清除隔离属性与签名
     cp -R "$maple_app" "$dmg_temp/stage/Maple.app"
     clean_xattrs_and_sign "$dmg_temp/stage/Maple.app"
+
+    if [ -f "Resources/首次打开修复.command" ]; then
+        cp "Resources/首次打开修复.command" "$dmg_temp/stage/首次打开修复.command"
+        chmod +x "$dmg_temp/stage/首次打开修复.command"
+        xattr -c "$dmg_temp/stage/首次打开修复.command" 2>/dev/null || true
+    fi
+    if [ -f "Resources/安装说明.html" ]; then
+        cp "Resources/安装说明.html" "$dmg_temp/stage/安装说明.html"
+        xattr -c "$dmg_temp/stage/安装说明.html" 2>/dev/null || true
+    fi
+
+    # 为两个底部辅助文件赋予小尺寸精致自定义图标（视觉大小约 36pt，明显小于上方 96pt 主图标）
+    swift -e '
+import AppKit
+let args = CommandLine.arguments
+if args.count >= 5 {
+    if let fixImg = NSImage(contentsOfFile: args[1]) {
+        NSWorkspace.shared.setIcon(fixImg, forFile: args[2], options: [])
+    }
+    if let docImg = NSImage(contentsOfFile: args[3]) {
+        NSWorkspace.shared.setIcon(docImg, forFile: args[4], options: [])
+    }
+}
+' "Resources/helper_fix_icon.png" "$dmg_temp/stage/首次打开修复.command" "Resources/helper_doc_icon.png" "$dmg_temp/stage/安装说明.html" 2>/dev/null || true
 
     # 3. 先强行卸载所有旧的同名挂载卷，避免 Finder 卷名冲突（如 Maple 1, Maple 2）
     for m in "/Volumes/$vol_name" "/Volumes/${vol_name} 1" "/Volumes/${vol_name} 2" "/Volumes/${vol_name} 3"; do
@@ -224,11 +253,15 @@ build_dmg() {
             --volicon "Resources/AppIcon.icns" \
             --background "Resources/dmg_background.png" \
             --window-pos 400 180 \
-            --window-size 560 400 \
+            --window-size 560 440 \
             --icon-size 96 \
-            --icon "Maple.app" 140 200 \
+            --icon "Maple.app" 140 150 \
             --hide-extension "Maple.app" \
-            --app-drop-link 420 200 \
+            --app-drop-link 420 150 \
+            --icon "首次打开修复.command" 210 278 \
+            --hide-extension "首次打开修复.command" \
+            --icon "安装说明.html" 350 278 \
+            --hide-extension "安装说明.html" \
             --format UDZO \
             --hdiutil-quiet \
             "$output_dmg" \

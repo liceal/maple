@@ -1107,12 +1107,17 @@ final class PaneView: NSView {
         syncPreviewPaneState()
     }
 
+    func prepareForRemoval() {
+        previewPane.closePreviewView()
+    }
+
     private func syncPreviewPaneState() {
         let isVisible = AppSettings.isPreviewPaneVisible(for: viewMode)
         previewButton.isOn = isVisible
         previewButton.contentTintColor = isVisible ? .controlAccentColor : .secondaryLabelColor
 
         if viewMode == .columns {
+            previewPane.closePreviewView()
             previewPane.isHidden = true
             previewSplitter.isHidden = true
             listAndIconTrailingToSplitter?.isActive = false
@@ -1128,6 +1133,7 @@ final class PaneView: NSView {
                 previewWidthConstraint?.isActive = true
                 updatePreviewContent()
             } else {
+                previewPane.closePreviewView()
                 previewPane.isHidden = true
                 previewSplitter.isHidden = true
                 listAndIconTrailingToSplitter?.isActive = false

@@ -552,8 +552,9 @@ final class FilePreviewPane: NSView {
     private let scroll = NSScrollView()
     private let documentView = FlippedDocumentView()
 
-    /// QuickLook 实时预览区（供 PDF、图片、音视频、代码/文档直接内嵌交互浏览）
-    private let qlPreviewView = QLPreviewView(frame: .zero, style: .normal)!
+    /// QuickLook 实时预览容器与按需创建的视图（在释放或移出窗口前显式调用 close()，彻底解决 macOS 11 下 -[QLPreviewView dealloc] 断言崩溃）
+    private let previewContainer = NSView()
+    private var qlPreviewView: QLPreviewView?
     /// 高清图标展示区（供应用、普通文件、多选汇总及无 QuickLook 时使用）
     private let iconView = NSImageView()
 
@@ -580,6 +581,47 @@ final class FilePreviewPane: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    deinit {
+        closePreviewView()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            closePreviewView()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    func closePreviewView() {
+        if let ql = qlPreviewView {
+            ql.previewItem = nil
+            ql.close()
+            ql.removeFromSuperview()
+            qlPreviewView = nil
+        }
+    }
+
+    private func ensurePreviewView() -> QLPreviewView? {
+        if let existing = qlPreviewView {
+            return existing
+        }
+        guard let ql = QLPreviewView(frame: previewContainer.bounds, style: .normal) else {
+            return nil
+        }
+        ql.translatesAutoresizingMaskIntoConstraints = false
+        ql.autostarts = true
+        ql.shouldCloseWithWindow = false
+        previewContainer.addSubview(ql)
+        NSLayoutConstraint.activate([
+            ql.topAnchor.constraint(equalTo: previewContainer.topAnchor),
+            ql.bottomAnchor.constraint(equalTo: previewContainer.bottomAnchor),
+            ql.leadingAnchor.constraint(equalTo: previewContainer.leadingAnchor),
+            ql.trailingAnchor.constraint(equalTo: previewContainer.trailingAnchor)
+        ])
+        qlPreviewView = ql
+        return ql
+    }
+
     override func mouseDown(with event: NSEvent) {
         // 阻断冒泡
     }
@@ -600,11 +642,9 @@ final class FilePreviewPane: NSView {
         documentView.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = documentView
 
-        // 1. QuickLook 实时渲染区
-        qlPreviewView.translatesAutoresizingMaskIntoConstraints = false
-        qlPreviewView.autostarts = true
-        qlPreviewView.shouldCloseWithWindow = false
-        documentView.addSubview(qlPreviewView)
+        // 1. QuickLook 实时渲染容器
+        previewContainer.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(previewContainer)
 
         // 2. 高清图标展示区
         iconView.imageScaling = .scaleProportionallyUpOrDown
@@ -676,7 +716,7 @@ final class FilePreviewPane: NSView {
         textContainer.addSubview(infoHeaderContainer)
         textContainer.addSubview(infoStack)
 
-        qlHeightConstraint = qlPreviewView.heightAnchor.constraint(equalToConstant: 220)
+        qlHeightConstraint = previewContainer.heightAnchor.constraint(equalToConstant: 220)
         iconHeightConstraint = iconView.heightAnchor.constraint(equalToConstant: 128)
 
         NSLayoutConstraint.activate([
@@ -691,9 +731,9 @@ final class FilePreviewPane: NSView {
             documentView.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
 
             // 实时预览视口
-            qlPreviewView.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 14),
-            qlPreviewView.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 14),
-            qlPreviewView.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -14),
+            previewContainer.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 14),
+            previewContainer.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 14),
+            previewContainer.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -14),
             qlHeightConstraint,
 
             // 图标展示区
@@ -703,7 +743,7 @@ final class FilePreviewPane: NSView {
             iconHeightConstraint,
 
             // 文字容器
-            textContainer.topAnchor.constraint(equalTo: qlPreviewView.bottomAnchor, constant: 14),
+            textContainer.topAnchor.constraint(equalTo: previewContainer.bottomAnchor, constant: 14),
             textContainer.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 16),
             textContainer.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -16),
             textContainer.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -20),
@@ -757,14 +797,14 @@ final class FilePreviewPane: NSView {
 
         // 1. 顶部呈现：非包且非目录的文件，优先使用 QuickLook 实时渲染；目录、.app 或特殊项展示大图标
         if !isDirectory && !isPackage {
-            qlPreviewView.isHidden = false
+            previewContainer.isHidden = false
             iconView.isHidden = true
-            qlPreviewView.previewItem = item.url as QLPreviewItem
+            ensurePreviewView()?.previewItem = item.url as QLPreviewItem
         } else {
-            qlPreviewView.previewItem = nil
-            qlPreviewView.isHidden = true
+            closePreviewView()
+            previewContainer.isHidden = true
             iconView.isHidden = false
-            let icon = NSWorkspace.shared.icon(forFile: item.url.path)
+            let icon = IconCache.preferRetinaRepresentations(NSWorkspace.shared.icon(forFile: item.url.path))
             icon.size = NSSize(width: 128, height: 128)
             iconView.image = icon
         }
@@ -813,8 +853,8 @@ final class FilePreviewPane: NSView {
 
         currentURL = nil
         sizeValueField = nil
-        qlPreviewView.previewItem = nil
-        qlPreviewView.isHidden = true
+        closePreviewView()
+        previewContainer.isHidden = true
         iconView.isHidden = false
 
         // 叠放图标
@@ -860,8 +900,8 @@ final class FilePreviewPane: NSView {
     func configureEmpty(folder url: URL, itemsCount: Int) {
         currentURL = url
         sizeValueField = nil
-        qlPreviewView.previewItem = nil
-        qlPreviewView.isHidden = true
+        closePreviewView()
+        previewContainer.isHidden = true
         iconView.isHidden = false
 
         let icon = NSWorkspace.shared.icon(forFile: url.path)
