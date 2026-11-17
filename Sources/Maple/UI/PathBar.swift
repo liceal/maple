@@ -45,6 +45,7 @@ final class PathBar: NSView {
     private var isEditing = false {
         didSet { needsDisplay = true; updateSubviews() }
     }
+    var isInlineEditingPath: Bool { isEditing }
     private var hoveredItem: Int? {
         didSet { if hoveredItem != oldValue { needsDisplay = true } }
     }

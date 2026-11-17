@@ -13,11 +13,15 @@ protocol PaneViewDelegate: AnyObject {
 }
 
 /// 单个浏览窗格：顶部路径栏 + 中部列表/图标 + 底部状态栏。
-final class PaneView: NSView {
+final class PaneView: NSView, NSMenuDelegate {
 
     weak var delegate: PaneViewDelegate?
 
-    private(set) var currentURL: URL
+    private(set) var currentURL: URL {
+        didSet {
+            updateDirectoryWatcher()
+        }
+    }
 
     /// 当前操作的目标目录（列表/图标视图为 currentURL，分栏视图为当前选中/右键的列对应目录）。
     var activeDirectoryURL: URL {
@@ -38,7 +42,7 @@ final class PaneView: NSView {
     var groupMode: GroupMode = .none {
         didSet { applyOrganization() }
     }
-    var viewMode: ViewMode = .list {
+    var viewMode: ViewMode = .icons {
         didSet {
             guard oldValue != viewMode else { return }
             // 标签视图展示期间切换显示方式不覆盖用户原本的全局默认显示方式
@@ -227,6 +231,12 @@ final class PaneView: NSView {
     private let iconView = FileIconView()
     private let columnView = ColumnBrowserView()
 
+    // MARK: - 文件监视器与重命名态
+    private var directoryWatcher: DirectoryWatcher?
+    var isInlineEditing: Bool {
+        InlineRenameField.activeField != nil || pathBar.isInlineEditingPath
+    }
+
     // MARK: - 预览窗格与「所有标签…」左列
     private let allTagsColumn = AllTagsBrowserColumnView()
     private let listAndIconContainer = NSView()
@@ -267,7 +277,7 @@ final class PaneView: NSView {
         sortField = SortField(rawValue: AppSettings.sortField) ?? .name
         ascending = AppSettings.sortAscending
         groupMode = GroupMode(rawValue: AppSettings.groupMode) ?? .none
-        viewMode = ViewMode(rawValue: AppSettings.viewMode) ?? .list
+        viewMode = ViewMode(rawValue: AppSettings.viewMode) ?? .icons
     }
 
     // MARK: - 构建界面
@@ -668,6 +678,11 @@ final class PaneView: NSView {
         NotificationCenter.default.addObserver(forName: .bottomStatusBarDidChange, object: nil, queue: .main) { [weak self] _ in
             self?.updateFocusVisuals()
         }
+
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, !self.isInlineEditing else { return }
+            self.reload()
+        }
     }
 
     // MARK: - 焦点
@@ -716,15 +731,18 @@ final class PaneView: NSView {
         if isCleared {
             items = []
             applyOrganization()
+            updateDirectoryWatcher()
             return
         }
         if let tagName {
             emptyLabel.isHidden = false
             runTagSearch(tagName)
+            updateDirectoryWatcher()
             return
         }
         items = FileItem.contents(of: currentURL, showHidden: AppSettings.showHidden)
         applyOrganization()
+        updateDirectoryWatcher()
         // 目录内容可能变了（例如刚新建文件夹），重新判断地址栏箭头是否置灰
         pathBar.invalidateFolderCache()
         refreshPathBar()
@@ -746,6 +764,25 @@ final class PaneView: NSView {
         updateNavigationButtons()
         updateStatus()
         updatePreviewContent()
+    }
+
+    private func updateDirectoryWatcher() {
+        guard !isTagView, !isCleared, currentURL.isFileURL else {
+            directoryWatcher?.stop()
+            directoryWatcher = nil
+            return
+        }
+
+        if let watcher = directoryWatcher, watcher.isWatching(url: currentURL) {
+            return
+        }
+
+        directoryWatcher?.stop()
+        directoryWatcher = DirectoryWatcher(url: currentURL) { [weak self] in
+            guard let self else { return }
+            guard !self.isInlineEditing else { return }
+            self.reload()
+        }
     }
 
     private static var hasPromptedTrashAlert = false
@@ -1092,6 +1129,7 @@ final class PaneView: NSView {
     }
 
     private func selectionChanged() {
+        contextTargetItems.removeAll()
         refreshPathBar()
         updateStatus()
         activate()
@@ -1108,6 +1146,8 @@ final class PaneView: NSView {
     }
 
     func prepareForRemoval() {
+        directoryWatcher?.stop()
+        directoryWatcher = nil
         previewPane.closePreviewView()
     }
 
@@ -1488,6 +1528,12 @@ final class PaneView: NSView {
             case "v":
                 paste()
                 return true
+            case "x":
+                cutSelection()
+                return true
+            case "d":
+                contextDuplicate()
+                return true
             case "f":
                 return false
             case "w":
@@ -1572,10 +1618,8 @@ final class PaneView: NSView {
 
         menu.addItem(.separator())
         add(menu, "拷贝路径", #selector(copyPanePath))
-        let pasteItem = add(menu, "粘贴", #selector(paste))
-        let pasteOptions: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
-        let pastedURLs = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: pasteOptions) as? [URL]
-        pasteItem.isEnabled = !isTagView && !(pastedURLs?.isEmpty ?? true)
+        let pasteItem = add(menu, "粘贴", #selector(paste(_:)))
+        pasteItem.isEnabled = hasPasteableFiles
 
         menu.addItem(.separator())
         let newFolder = add(menu, "新建文件夹", #selector(createFolder))
@@ -1905,8 +1949,25 @@ final class PaneView: NSView {
         }
     }
 
+    func pasteboardFileURLs() -> [URL] {
+        let pb = NSPasteboard.general
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: options) as? [URL], !urls.isEmpty {
+            return urls
+        }
+        if let filenames = pb.propertyList(forType: .init("NSFilenamesPboardType")) as? [String], !filenames.isEmpty {
+            return filenames.map { URL(fileURLWithPath: $0) }
+        }
+        return []
+    }
+
+    var hasPasteableFiles: Bool {
+        !isTagView && !pasteboardFileURLs().isEmpty
+    }
+
     @objc func cutSelection() {
         let targets = effectiveContextItems
+        contextTargetItems.removeAll()
         let urls = targets.map { $0.url }
         guard !urls.isEmpty else { return }
         let pasteboard = NSPasteboard.general
@@ -1917,6 +1978,7 @@ final class PaneView: NSView {
 
     @objc func copySelection() {
         let targets = effectiveContextItems
+        contextTargetItems.removeAll()
         let urls = targets.map { $0.url }
         guard !urls.isEmpty else { return }
         let pasteboard = NSPasteboard.general
@@ -1925,15 +1987,14 @@ final class PaneView: NSView {
         pasteboard.setString("copy", forType: Self.cutPasteboardType)
     }
 
-    @objc func paste() {
+    @objc func paste(_ sender: Any? = nil) {
         guard tagName == nil else { NSSound.beep(); return }
-        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
-        guard let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: options) as? [URL],
-              !urls.isEmpty else { return }
+        let urls = pasteboardFileURLs()
+        guard !urls.isEmpty else { return }
 
         let isCut = NSPasteboard.general.string(forType: Self.cutPasteboardType) == "cut"
 
-        var firstCreated: URL?
+        var createdURLs: [URL] = []
         let targetDir = activeDirectoryURL
         for source in urls {
             let destination = uniqueDestination(for: source.lastPathComponent, in: targetDir)
@@ -1943,7 +2004,7 @@ final class PaneView: NSView {
                 } else {
                     try FileManager.default.copyItem(at: source, to: destination)
                 }
-                if firstCreated == nil { firstCreated = destination }
+                createdURLs.append(destination)
             } catch {
                 presentError(error, title: "粘贴失败")
                 return
@@ -1952,11 +2013,30 @@ final class PaneView: NSView {
         if isCut {
             NSPasteboard.general.setString("", forType: Self.cutPasteboardType)
         }
+        NotificationCenter.default.post(name: .filesDidChangeOnDisk, object: nil)
         reload()
-        if let firstCreated {
+        if !createdURLs.isEmpty {
             FileOperations.playFileAddedSound()
-            select(urls: [firstCreated])
+            select(urls: Set(createdURLs))
         }
+    }
+
+    // MARK: - 响应链通用标准动作
+
+    @objc func copy(_ sender: Any?) {
+        copySelection()
+    }
+
+    @objc func cut(_ sender: Any?) {
+        cutSelection()
+    }
+
+    @objc func duplicate(_ sender: Any?) {
+        contextDuplicate()
+    }
+
+    override func selectAll(_ sender: Any?) {
+        selectAll()
     }
 
     private func uniqueDestination(for name: String, in directory: URL? = nil) -> URL {
@@ -1997,6 +2077,7 @@ final class PaneView: NSView {
     /// 复制副本（Duplicate）
     @objc func contextDuplicate() {
         let targets = effectiveContextItems
+        contextTargetItems.removeAll()
         let urls = targets.map { $0.url }
         guard !urls.isEmpty else { return }
         let created = FileOperations.duplicate(urls: urls)
@@ -2178,6 +2259,7 @@ final class PaneView: NSView {
 
     private func makeContextMenu(clickedItem: FileItem?) -> NSMenu {
         let menu = NSMenu()
+        menu.delegate = self
         menu.autoenablesItems = false
 
         let selection = currentSelection()
@@ -2314,7 +2396,8 @@ final class PaneView: NSView {
                 add(menu, "新建文件夹", #selector(createFolder))
                 add(menu, "新建文件", #selector(createFile))
                 menu.addItem(.separator())
-                add(menu, "粘贴", #selector(paste))
+                let pasteItem = add(menu, "粘贴", #selector(paste(_:)))
+                pasteItem.isEnabled = hasPasteableFiles
                 menu.addItem(.separator())
             }
             add(menu, "在终端中打开", #selector(openInTerminal))
@@ -2324,6 +2407,10 @@ final class PaneView: NSView {
         }
 
         return menu
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        contextTargetItems.removeAll()
     }
 
     @discardableResult

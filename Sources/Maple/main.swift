@@ -562,6 +562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         add(fileMenu, "新建窗口", #selector(reopenMainWindowAction), "n", [.command])
         add(fileMenu, "新建文件夹", #selector(newFolderAction), "n", [.command, .shift])
         add(fileMenu, "重命名", #selector(renameAction), "", [])
+        add(fileMenu, "制作副本", #selector(duplicateAction), "d", [.command])
         add(fileMenu, "移到废纸篓", #selector(trashAction), "\u{8}", [.command])
         fileMenu.addItem(.separator())
         add(fileMenu, "拷贝路径", #selector(copyPathAction), "c", [.command, .option])
@@ -585,10 +586,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         redoItem.target = self
         redoItem.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "剪切".localized, action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "拷贝".localized, action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "粘贴".localized, action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "全选".localized, action: #selector(NSStandardKeyBindingResponding.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: "剪切".localized, action: #selector(cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "拷贝".localized, action: #selector(copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴".localized, action: #selector(paste(_:)), keyEquivalent: "v")
+        let dupEditItem = editMenu.addItem(withTitle: "复制".localized, action: #selector(duplicateAction), keyEquivalent: "d")
+        dupEditItem.target = self
+        editMenu.addItem(withTitle: "全选".localized, action: #selector(selectAll(_:)), keyEquivalent: "a")
 
         // 显示
         let viewItem = NSMenuItem()
@@ -697,10 +700,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if menuItem.action == #selector(quitAppAction) || menuItem.action == #selector(NSApplication.terminate(_:)) {
             return true
         }
+        if menuItem.action == #selector(copy(_:)) || menuItem.action == #selector(cut(_:)) || menuItem.action == #selector(duplicateAction) {
+            if let _ = NSApp.keyWindow?.firstResponder as? NSText { return true }
+            return !(pane()?.currentSelection().isEmpty ?? true)
+        }
+        if menuItem.action == #selector(paste(_:)) {
+            if let _ = NSApp.keyWindow?.firstResponder as? NSText { return true }
+            return pane()?.hasPasteableFiles == true
+        }
         return true
     }
 
     private func pane() -> PaneView? { workspace?.focusedPane }
+
+    @objc func duplicateAction() { pane()?.contextDuplicate() }
+
+    @objc func copy(_ sender: Any?) {
+        if let editor = NSApp.keyWindow?.firstResponder as? NSText {
+            editor.copy(sender)
+        } else {
+            pane()?.copySelection()
+        }
+    }
+
+    @objc func cut(_ sender: Any?) {
+        if let editor = NSApp.keyWindow?.firstResponder as? NSText {
+            editor.cut(sender)
+        } else {
+            pane()?.cutSelection()
+        }
+    }
+
+    @objc func paste(_ sender: Any?) {
+        if let editor = NSApp.keyWindow?.firstResponder as? NSText {
+            editor.paste(sender)
+        } else {
+            pane()?.paste()
+        }
+    }
+
+    @objc func selectAll(_ sender: Any?) {
+        if let editor = NSApp.keyWindow?.firstResponder as? NSText {
+            editor.selectAll(sender)
+        } else {
+            pane()?.selectAll()
+        }
+    }
 
     @objc private func newFolderAction() { pane()?.createFolder() }
     @objc private func renameAction() { pane()?.renameSelected() }

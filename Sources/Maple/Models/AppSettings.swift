@@ -400,7 +400,7 @@ enum AppSettings {
     }
 
     static var viewMode: String {
-        get { store.string(forKey: "viewMode") ?? ViewMode.list.rawValue }
+        get { store.string(forKey: "viewMode") ?? ViewMode.icons.rawValue }
         set { store.set(newValue, forKey: "viewMode") }
     }
 
