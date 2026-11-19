@@ -549,7 +549,7 @@ final class FilePreviewPane: NSView {
         }
     }
 
-    private let scroll = NSScrollView()
+    private let scroll = OverlayScrollView()
     private let documentView = FlippedDocumentView()
 
     /// QuickLook 实时预览容器与按需创建的视图（在释放或移出窗口前显式调用 close()，彻底解决 macOS 11 下 -[QLPreviewView dealloc] 断言崩溃）

@@ -24,9 +24,21 @@ final class SplitterView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        wantsLayer = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not implemented") }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        window?.invalidateCursorRects(for: self)
+    }
+
+    private var resizeCursor: NSCursor {
+        axis == .vertical ? .resizeLeftRight : .resizeUpDown
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         if AppSettings.cornerScheme == .cards { return }
@@ -50,31 +62,40 @@ final class SplitterView: NSView {
     }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: axis == .vertical ? .resizeLeftRight : .resizeUpDown)
+        addCursorRect(bounds, cursor: resizeCursor)
     }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverArea { removeTrackingArea(hoverArea) }
         let area = NSTrackingArea(rect: bounds,
-                                  options: [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp, .inVisibleRect],
+                                  options: [.mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .activeInActiveApp, .inVisibleRect],
                                   owner: self,
                                   userInfo: nil)
         addTrackingArea(area)
         hoverArea = area
     }
 
+    override func mouseEntered(with event: NSEvent) {
+        resizeCursor.set()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        resizeCursor.set()
+    }
+
     override func cursorUpdate(with event: NSEvent) {
-        (axis == .vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
+        resizeCursor.set()
     }
 
     override func mouseDown(with event: NSEvent) {
-        (axis == .vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
+        resizeCursor.set()
         dragOrigin = event.locationInWindow
         onDragBegan?()
     }
 
     override func mouseDragged(with event: NSEvent) {
+        resizeCursor.set()
         // 用「窗口坐标下的总位移」而不是 NSEvent.deltaX/deltaY：
         // 窗口坐标一定向右、向上为正，换算成「向右 / 向下」不会被坐标翻转或设备差异弄反。
         let dx = event.locationInWindow.x - dragOrigin.x

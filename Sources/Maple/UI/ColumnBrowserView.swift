@@ -44,7 +44,7 @@ final class ColumnBrowserView: NSView {
         }
     }
 
-    private let scroll = NSScrollView()
+    private let scroll = OverlayScrollView()
     private let board = ColumnBoard()
     fileprivate var columns: [BrowserColumn] = []
     fileprivate var dividers: [ColumnDividerView] = []
@@ -1556,7 +1556,7 @@ private final class ColumnRowCell: NSTableCellView {
 /// 分栏里每一列表格自己的滚动视图。
 /// 竖向滚动留给自己，横向手势交给外层「整排」滚动视图，
 /// 否则点开某一列后，横向滚动会被这一列吃掉，整排就滚不动了。
-private final class ColumnScrollView: NSScrollView {
+private final class ColumnScrollView: OverlayScrollView {
 
     weak var horizontalTarget: NSScrollView?
 
@@ -1622,7 +1622,7 @@ final class FilePreviewColumn: NSView {
         }
     }
 
-    private final class PreviewScrollView: NSScrollView {
+    private final class PreviewScrollView: OverlayScrollView {
         weak var horizontalTarget: NSScrollView?
 
         override func mouseDown(with event: NSEvent) {

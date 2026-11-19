@@ -359,6 +359,7 @@ final class FileListView: NSView {
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
         scroll.borderType = .noBorder
         scroll.drawsBackground = true
         scroll.backgroundColor = .controlBackgroundColor
@@ -891,11 +892,11 @@ final class FileListView: NSView {
         return result
     }
 
-    /// 命中某条分隔线（docX 为文档坐标；最右侧列分隔线向右放宽热区，更方便抓握拉宽）。
+    /// 命中某条分隔线（docX 为文档坐标）。
     fileprivate func divider(at docX: CGFloat, tolerance: CGFloat) -> ColumnDivider? {
         for div in dividers() {
             let leftTol = tolerance
-            let rightTol = div.isRightmost ? tolerance + 8 : tolerance
+            let rightTol = tolerance
             if docX >= div.x - leftTol && docX <= div.x + rightTol {
                 return div
             }
@@ -1015,13 +1016,17 @@ final class FileListView: NSView {
 
     /// 根据所有列总宽度与可视区域宽度同步更新文档宽度，超出时自动激活水平滚动。
     private func updateDocumentWidth() {
-        let clipWidth = scroll.contentView.bounds.width
+        let clipSize = scroll.contentView.bounds.size
+        let clipWidth = clipSize.width
         let minWidthForCurrentScroll = resizeSession != nil
             ? (scroll.contentView.bounds.origin.x + clipWidth)
             : 0
+        let columnsSpan = (columnLayout.totalWidth > clipWidth || resizeSession != nil)
+            ? (columnLayout.totalWidth + Self.trailingBreathingSpace)
+            : columnLayout.totalWidth
         let targetWidth = max(
             clipWidth,
-            columnLayout.totalWidth + Self.trailingBreathingSpace,
+            columnsSpan,
             minWidthForCurrentScroll
         )
         outline.minimumDocumentWidth = targetWidth
@@ -1030,8 +1035,10 @@ final class FileListView: NSView {
             col.maxWidth = max(100000, targetWidth)
             col.width = targetWidth
         }
-        if abs(outline.frame.width - targetWidth) > 0.5 {
-            outline.setFrameSize(NSSize(width: targetWidth, height: outline.frame.height))
+        let rowsHeight = outline.numberOfRows > 0 ? NSMaxY(outline.rect(ofRow: outline.numberOfRows - 1)) : 0
+        let targetHeight = max(clipSize.height, rowsHeight)
+        if abs(outline.frame.width - targetWidth) > 0.5 || abs(outline.frame.height - targetHeight) > 0.5 {
+            outline.setFrameSize(NSSize(width: targetWidth, height: targetHeight))
         }
     }
 
@@ -1062,6 +1069,36 @@ final class FileListView: NSView {
                 cell.updateFrames()
             }
         }
+    }
+
+    /// 检查某点是否落在悬浮滚动条的有效区域内，避免列线抢占滚动条响应。
+    fileprivate func isPointInScroller(_ point: NSPoint, in view: NSView) -> Bool {
+        if let vs = scroll.verticalScroller, !vs.isHidden {
+            if let obs = vs as? OverlayScroller, !obs.canScroll { return false }
+            let p = vs.convert(point, from: view)
+            if vs.bounds.contains(p) { return true }
+        }
+        if let hs = scroll.horizontalScroller, !hs.isHidden {
+            if let obs = hs as? OverlayScroller, !obs.canScroll { return false }
+            let p = hs.convert(point, from: view)
+            if hs.bounds.contains(p) { return true }
+        }
+        return false
+    }
+
+    /// 检查窗口坐标下的某点是否落在悬浮滚动条上方。
+    fileprivate func isWindowPointInScroller(_ pointInWindow: NSPoint) -> Bool {
+        if let vs = scroll.verticalScroller, !vs.isHidden {
+            if let obs = vs as? OverlayScroller, !obs.canScroll { return false }
+            let p = vs.convert(pointInWindow, from: nil)
+            if vs.bounds.contains(p) { return true }
+        }
+        if let hs = scroll.horizontalScroller, !hs.isHidden {
+            if let obs = hs as? OverlayScroller, !obs.canScroll { return false }
+            let p = hs.convert(pointInWindow, from: nil)
+            if hs.bounds.contains(p) { return true }
+        }
+        return false
     }
 }
 
@@ -1507,7 +1544,8 @@ final class KeyTableView: NSTableView {
             if size.width < targetWidth || (targetWidth > 0 && abs(size.width - targetWidth) > 0.5) {
                 size.width = targetWidth
             }
-            if size.height < visibleSize.height { size.height = visibleSize.height }
+            let rowsHeight = numberOfRows > 0 ? NSMaxY(rect(ofRow: numberOfRows - 1)) : 0
+            size.height = max(visibleSize.height, rowsHeight)
         }
         super.setFrameSize(size)
         if let col = tableColumns.first, abs(col.width - size.width) > 0.5 {
@@ -1891,7 +1929,8 @@ final class KeyOutlineView: NSOutlineView {
             if size.width < targetWidth || (targetWidth > 0 && abs(size.width - targetWidth) > 0.5) {
                 size.width = targetWidth
             }
-            if size.height < visibleSize.height { size.height = visibleSize.height }
+            let rowsHeight = numberOfRows > 0 ? NSMaxY(rect(ofRow: numberOfRows - 1)) : 0
+            size.height = max(visibleSize.height, rowsHeight)
         }
         super.setFrameSize(size)
         if let col = tableColumns.first, abs(col.width - size.width) > 0.5 {
@@ -2334,7 +2373,7 @@ private final class ColumnDividerLayer: NSView {
         needsDisplay = true
     }
 
-    /// 只有点在竖线附近才接管鼠标事件，其余穿透给下层视图。
+    /// 只有点在竖线附近才接管鼠标事件，其余穿透给下层视图；绝对不抢占悬浮滚动条点击。
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let owner else { return nil }
         if let field = InlineRenameField.activeField, let winPoint = superview?.convert(point, to: nil),
@@ -2342,6 +2381,12 @@ private final class ColumnDividerLayer: NSView {
             return nil
         }
         let local = convert(point, from: superview)
+
+        // 优先将事件让给悬浮滚动条，避免最右侧列边缘挡住垂直滚动条的点击/拖拽
+        if owner.isPointInScroller(local, in: self) {
+            return nil
+        }
+
         let docX = local.x + owner.scrollOffsetX
         guard owner.divider(at: docX, tolerance: tolerance) != nil else { return nil }
         return super.hitTest(point)
@@ -2349,6 +2394,21 @@ private final class ColumnDividerLayer: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         guard let owner, !isDraggingDivider else { return }
+        if let topHit = window?.contentView?.hitTest(event.locationInWindow), topHit is SplitterView {
+            if hoveredDividerTarget != nil {
+                hoveredDividerTarget = nil
+                needsDisplay = true
+            }
+            return
+        }
+        // 如果光标在垂直或水平滚动条上方，重置列线 hover 并穿透
+        if owner.isWindowPointInScroller(event.locationInWindow) {
+            if hoveredDividerTarget != nil {
+                hoveredDividerTarget = nil
+                needsDisplay = true
+            }
+            return
+        }
         if let field = InlineRenameField.activeField, field.window === window,
            field.containsWindowPoint(event.locationInWindow) {
             if hoveredDividerTarget != nil {
@@ -2361,11 +2421,12 @@ private final class ColumnDividerLayer: NSView {
         let point = convert(event.locationInWindow, from: nil)
         let docX = point.x + owner.scrollOffsetX
         let hit = owner.divider(at: docX, tolerance: tolerance)?.target
+        let wasHovering = (hoveredDividerTarget != nil)
         if hoveredDividerTarget != hit {
             hoveredDividerTarget = hit
             needsDisplay = true
         }
-        if hit == nil && InlineRenameField.activeField == nil {
+        if wasHovering && hit == nil && InlineRenameField.activeField == nil {
             NSCursor.arrow.set()
         }
     }

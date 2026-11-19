@@ -103,6 +103,7 @@ final class FileIconView: NSView {
         scroll.documentView = collection
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
         scroll.borderType = .noBorder
         scroll.drawsBackground = true
         scroll.backgroundColor = .controlBackgroundColor
@@ -363,7 +364,7 @@ final class FileIconView: NSView {
 
     /// 应用由显示选项调节的图标尺寸，仅在设置改变时刷新
     func applyIconSize(_ size: CGFloat) {
-        let clamped = max(36, min(96, size))
+        let clamped = max(32, min(128, size))
         iconSize = clamped
         FileIconItem.iconSize = clamped
         flowLayout.itemSize = Self.itemSize(for: clamped)
@@ -632,13 +633,15 @@ final class KeyCollectionView: NSCollectionView {
         return result
     }
 
-    /// 保证网格在内容较少时也能铺满滚动区域，使用户点击底部空白处也能正确激活窗格并取消选中或拉框选。
+    /// 保证网格在内容较少时也能铺满滚动区域，使用户点击底部空白处也能正确激活窗格并取消选中或拉框选；
+    /// 同时当窗格缩小时自动回缩至真实内容高度，不残留多余滚动条。
     override func setFrameSize(_ newSize: NSSize) {
         var size = newSize
         if let clip = enclosingScrollView?.contentView {
             let visibleSize = clip.bounds.size
-            if size.width < visibleSize.width { size.width = visibleSize.width }
-            if size.height < visibleSize.height { size.height = visibleSize.height }
+            size.width = visibleSize.width
+            let contentH = collectionViewLayout?.collectionViewContentSize.height ?? 0
+            size.height = max(visibleSize.height, contentH)
         }
         super.setFrameSize(size)
     }
@@ -1169,7 +1172,7 @@ final class IconSectionHeader: NSView {
 
 // MARK: - 支持双指横向滑动手势的滚动容器
 
-final class IconScrollView: NSScrollView {
+final class IconScrollView: OverlayScrollView {
 
     var canSwipe: (() -> Bool)?
     var canSwipeDirection: ((_ isBack: Bool) -> Bool)?

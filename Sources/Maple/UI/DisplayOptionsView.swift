@@ -12,7 +12,7 @@ final class DisplayOptionsViewController: NSViewController {
     private let rowSlider = NSSlider()
     private let iconValue = NSTextField(labelWithString: "")
     private let rowValue = NSTextField(labelWithString: "")
-    private let hiddenCheck = NSButton(checkboxWithTitle: "显示隐藏文件", target: nil, action: nil)
+    private let hiddenCheck = NSButton(checkboxWithTitle: "显示隐藏文件".localized, target: nil, action: nil)
     private let resetButton = NSButton()
 
     private let initialIconSize: CGFloat
@@ -36,13 +36,14 @@ final class DisplayOptionsViewController: NSViewController {
         title.font = .systemFont(ofSize: 13, weight: .semibold)
 
         configure(slider: iconSlider,
-                  min: 40, max: 160, value: initialIconSize,
+                  min: 32, max: 128, value: initialIconSize,
                   action: #selector(iconSizeChanged))
         configure(slider: rowSlider,
-                  min: 20, max: 44, value: initialRowHeight,
+                  min: 20, max: 38, value: initialRowHeight,
                   action: #selector(rowHeightChanged))
         updateValueLabels()
 
+        hiddenCheck.title = "显示隐藏文件".localized
         hiddenCheck.font = .systemFont(ofSize: 12)
         hiddenCheck.state = initialShowHidden ? .on : .off
         hiddenCheck.target = self

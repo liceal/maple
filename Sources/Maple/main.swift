@@ -23,7 +23,11 @@ final class MainWindow: NSWindow {
         case .leftMouseUp, .rightMouseUp:
             super.sendEvent(event)
             if InlineRenameField.activeField == nil {
-                NSCursor.arrow.set()
+                if let hit = contentView?.hitTest(event.locationInWindow) as? SplitterView {
+                    (hit.axis == .vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
+                } else {
+                    NSCursor.arrow.set()
+                }
             }
             return
         case .keyDown:
@@ -935,7 +939,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = controller
-        popover.contentSize = NSSize(width: 264, height: 210)
+        popover.contentSize = NSSize(width: 264, height: 226)
         if let anchor {
             popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
         } else if let content = window.contentView {
@@ -1196,9 +1200,9 @@ final class ToolbarViewModeView: NSView {
     var onPick: ((ViewMode) -> Void)?
 
     private let buttons: [(mode: ViewMode, button: SquareToolbarButton)] = [
-        (.list, ToolbarViewModeView.makeButton("list.bullet", "列表")),
-        (.icons, ToolbarViewModeView.makeButton("square.grid.2x2", "图标")),
-        (.columns, ToolbarViewModeView.makeButton("rectangle.split.3x1", "分栏"))
+        (.list, ToolbarViewModeView.makeButton("list.bullet", "列表".localized)),
+        (.icons, ToolbarViewModeView.makeButton("square.grid.2x2", "图标".localized)),
+        (.columns, ToolbarViewModeView.makeButton("rectangle.split.3x1", "分栏".localized))
     ]
 
     private static func makeButton(_ symbol: String, _ tooltip: String) -> SquareToolbarButton {

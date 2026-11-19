@@ -10,7 +10,7 @@ export LC_ALL=en_US.UTF-8
 GIT_LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git tag -l "v*" --sort=-v:refname 2>/dev/null | head -n 1 || true)
 DETECTED_VERSION=$(echo "$GIT_LATEST_TAG" | sed -E 's/^v//')
 
-VERSION="${1:-${MAPLE_VERSION:-${DETECTED_VERSION:-1.1.1}}}"
+VERSION="${1:-${MAPLE_VERSION:-${DETECTED_VERSION:-1.1.2}}}"
 echo "→ 准备构建 Maple v${VERSION} (来源: ${1:+入参}${MAPLE_VERSION:+环境变量}${DETECTED_VERSION:+Git Tag: $GIT_LATEST_TAG}) ..."
 
 # 仅检测可用于对外分发的 Developer ID Application 证书（切勿使用本机调试专用的 Apple Development 证书签名分发包或 DMG，否则会导致 DMG 本身在其他电脑上被拦截）

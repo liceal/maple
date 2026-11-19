@@ -211,6 +211,9 @@ final class WorkspaceArea: NSView {
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
             guard let self, event.window === window else { return event }
             let point = self.convert(event.locationInWindow, from: nil)
+            if self.dividers.contains(where: { !$0.isHidden && $0.frame.contains(point) }) {
+                return event
+            }
             if let pane = self.panes.first(where: { $0.frame.contains(point) }),
                pane !== self.focusedPane {
                 self.setFocused(pane)
@@ -339,7 +342,8 @@ final class WorkspaceArea: NSView {
     /// 分隔条只覆盖它相邻窗格的范围（如「上整下二」的竖线只在下方一半）。
     private func layoutDividers() {
         guard !dividers.isEmpty else { return }
-        let rect = bounds
+        let rect = AppSettings.cornerScheme == .cards ? bounds.insetBy(dx: 6, dy: 6) : bounds
+        guard rect.width > 0, rect.height > 0 else { return }
         let cells = mode.normalizedCells
         var cursor = 0
 
@@ -359,10 +363,11 @@ final class WorkspaceArea: NSView {
             let divider = dividers[cursor]
             cursor += 1
             guard !span.isEmpty else { divider.frame = .zero; continue }
-            // 命中区 ±5pt（与列分隔条一致），细线也好抓。z 序由 rebuildDividers 的
+            // 命中区 ±6pt，细线也好抓。z 序由 rebuildDividers 的
             // `positioned: .above` 保证，这里只改 frame，绝不在布局时移除重建（否则会打断拖拽）。
             divider.frame = NSRect(x: x - Self.dividerHitHalf, y: span.minY,
                                    width: Self.dividerHitHalf * 2, height: span.height)
+            divider.needsDisplay = true
         }
 
         for (index, boundary) in hBoundaries.enumerated() {
@@ -383,11 +388,12 @@ final class WorkspaceArea: NSView {
             guard !span.isEmpty else { divider.frame = .zero; continue }
             divider.frame = NSRect(x: span.minX, y: y - Self.dividerHitHalf,
                                    width: span.width, height: Self.dividerHitHalf * 2)
+            divider.needsDisplay = true
         }
     }
 
-    /// 分隔条命中区的半宽：线本身只有 1pt，但可抓区域放宽到 ±5pt，和列表列线一致。
-    private static let dividerHitHalf: CGFloat = 5
+    /// 分隔条命中区的半宽：线本身 1pt，判定放宽到 ±4pt（共 8pt），既易抓握又避让相邻窗格悬浮滚动条。
+    private static let dividerHitHalf: CGFloat = 4
 
     private func beginDrag() {
         dragStartV = vRatios

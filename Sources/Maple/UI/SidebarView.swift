@@ -128,7 +128,7 @@ final class SidebarView: NSView {
 
     private let effect = NSVisualEffectView()
     private let outline = SidebarOutlineView()
-    private let scroll = NSScrollView()
+    private let scroll = OverlayScrollView()
     private let footerBar = NSView()
     private let moreButton = SquareToolbarButton(size: 24)
     private let settingsButton = SquareToolbarButton(size: 24)

@@ -120,7 +120,9 @@ final class PaneView: NSView, NSMenuDelegate {
         }
 
         iconView.isPaneActive = isFocused
-        statusBar.isHidden = AppSettings.hideBottomStatusBar
+        let hideStatus = AppSettings.hideBottomStatusBar
+        statusBar.isHidden = hideStatus
+        statusBarHeightConstraint?.constant = hideStatus ? 0 : Theme.statusHeight
         needsDisplay = true
     }
 
@@ -207,6 +209,7 @@ final class PaneView: NSView, NSMenuDelegate {
     var isAtTopRight: Bool = false
     var isAtTopLeft: Bool = false
     private var previewButtonTrailingConstraint: NSLayoutConstraint?
+    private var statusBarHeightConstraint: NSLayoutConstraint?
     private let headerSeparator = Theme.backgroundView(Theme.hairline)
 
     private let header = Theme.backgroundView(Theme.paneBackground)
@@ -297,7 +300,7 @@ final class PaneView: NSView, NSMenuDelegate {
         paneMenuButton.isBordered = false
         paneMenuButton.imagePosition = .imageOnly
         paneMenuButton.image = Self.verticalEllipsisImage()
-        paneMenuButton.toolTip = "窗格操作"
+        paneMenuButton.toolTip = "窗格操作".localized
         paneMenuButton.target = self
         paneMenuButton.action = #selector(showPaneMenu(_:))
         paneMenuButton.widthAnchor.constraint(equalToConstant: 18).isActive = true
@@ -362,7 +365,7 @@ final class PaneView: NSView, NSMenuDelegate {
         button.isBordered = false
         button.imagePosition = .imageOnly
         button.image = Theme.symbol(symbol, size: 11, weight: .semibold)
-        button.toolTip = tooltip
+        button.toolTip = tooltip.localized
         button.target = self
         button.action = action
         button.widthAnchor.constraint(equalToConstant: 20).isActive = true
@@ -493,12 +496,12 @@ final class PaneView: NSView, NSMenuDelegate {
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
         statusLeft.translatesAutoresizingMaskIntoConstraints = false
-        statusLeft.font = .systemFont(ofSize: 10.5)
+        statusLeft.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         statusLeft.textColor = .secondaryLabelColor
         statusBar.addSubview(statusLeft)
 
         statusRight.translatesAutoresizingMaskIntoConstraints = false
-        statusRight.font = .systemFont(ofSize: 10.5)
+        statusRight.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         statusRight.textColor = .tertiaryLabelColor
         statusRight.alignment = .right
         statusBar.addSubview(statusRight)
@@ -524,7 +527,7 @@ final class PaneView: NSView, NSMenuDelegate {
         // 4. 预览模式切换按钮（右下角，内置图标）
         previewButton.translatesAutoresizingMaskIntoConstraints = false
         previewButton.image = Theme.previewPaneIcon
-        previewButton.toolTip = "显示/隐藏右侧预览窗格"
+        previewButton.toolTip = "显示/隐藏右侧预览窗格".localized
         previewButton.target = self
         previewButton.action = #selector(previewButtonClicked)
         statusBar.addSubview(previewButton)
@@ -569,7 +572,10 @@ final class PaneView: NSView, NSMenuDelegate {
     }
 
     private func buildStatusBar() {
-        statusBar.heightAnchor.constraint(equalToConstant: Theme.statusHeight).isActive = true
+        let h = statusBar.heightAnchor.constraint(equalToConstant: AppSettings.hideBottomStatusBar ? 0 : Theme.statusHeight)
+        h.isActive = true
+        self.statusBarHeightConstraint = h
+        statusBar.isHidden = AppSettings.hideBottomStatusBar
     }
 
     /// 焦点描边罩在整块之上（点击穿透），保证 2pt 边框不被内容视图盖住。
@@ -1473,14 +1479,20 @@ final class PaneView: NSView, NSMenuDelegate {
     func applyDisplayMetrics() {
         iconView.applyIconSize(AppSettings.gridIconSize)
         listView.rowHeight = AppSettings.listRowHeight
+        sizeSlider.configure(for: viewMode)
     }
 
     func updateIconSize(_ size: CGFloat) {
         iconView.applyIconSize(size)
+        sizeSlider.configure(for: viewMode)
     }
 
     func updateRowHeight(_ height: CGFloat) {
+        let iconSz = max(16, min(32, height - 6))
+        AppSettings.listIconSize = iconSz
+        listView.iconSize = iconSz
         listView.rowHeight = height
+        sizeSlider.configure(for: viewMode)
     }
 
     /// 菜单里「显示简介 / 快速查看」的对象名：有选中取选中项，否则取当前目录。

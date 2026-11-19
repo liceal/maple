@@ -835,3 +835,370 @@ enum Format {
         return "\(days / 365) 年"
     }
 }
+
+/// 自定义悬浮滚动条：
+/// 1. 悬浮在内容上方，不强占任何文档轨道空间（零死区）；
+/// 2. 静止时以轻量半透明（alpha 0.4）常驻边缘，随时可见；
+/// 3. 当鼠标悬停（Hover）、点击按住、拖拽或产生滚动时，透明度立即恢复为正常（alpha = 1.0），背景轨道显现；
+/// 4. 离开或停止交互后，延迟平滑渐变淡回半透明（绝不完全消失）；
+/// 5. 采用专属 CoreAnimation 图层与精准拖拽逻辑，彻底解决 AppKit overlay scroller 静止隐形与按不动的系统缺陷。
+final class OverlayScroller: NSScroller {
+    private let customTrack = CALayer()
+    private let customKnob = CALayer()
+    private var trackingArea: NSTrackingArea?
+    private var isHovered = false
+    private var isDragging = false
+    private var fadeWorkItem: DispatchWorkItem?
+
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        wantsLayer = true
+        alphaValue = 0.4
+
+        customTrack.cornerRadius = 3.0
+        customTrack.isHidden = true
+        layer?.addSublayer(customTrack)
+
+        customKnob.cornerRadius = 3.5
+        layer?.addSublayer(customKnob)
+        updateColors()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColors()
+    }
+
+    private func updateColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            customTrack.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.12).cgColor
+            let knobAlpha: CGFloat = (isHovered || isDragging) ? 0.8 : 0.45
+            customKnob.backgroundColor = NSColor.labelColor.withAlphaComponent(knobAlpha).cgColor
+        }
+    }
+
+    override var doubleValue: Double {
+        didSet { updateCustomLayers() }
+    }
+
+    override var knobProportion: CGFloat {
+        didSet { updateCustomLayers() }
+    }
+
+    override func layout() {
+        super.layout()
+        updateCustomLayers()
+    }
+
+    private var parentScrollView: NSScrollView? {
+        enclosingScrollView ?? (superview as? NSScrollView)
+    }
+
+    var canScroll: Bool {
+        guard let scrollView = parentScrollView, let docView = scrollView.documentView else { return false }
+        let isHoriz = bounds.width > bounds.height
+        if isHoriz {
+            return docView.frame.width > scrollView.contentView.bounds.width + 1.0
+        } else {
+            return docView.frame.height > scrollView.contentView.bounds.height + 1.0
+        }
+    }
+
+    func updateCustomLayers() {
+        guard let layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        // 隐藏 AppKit 原生私有子图层，防止系统内部将其淡化为 0
+        for sub in layer.sublayers ?? [] where sub !== customTrack && sub !== customKnob {
+            sub.isHidden = true
+        }
+
+        let isHoriz = bounds.width > bounds.height
+        let knob = rect(for: .knob)
+        let slot = rect(for: .knobSlot)
+
+        if isHoriz {
+            customKnob.frame = knob.insetBy(dx: 2, dy: 3.5)
+            customTrack.frame = slot.insetBy(dx: 1, dy: 2)
+            customKnob.cornerRadius = customKnob.frame.height / 2
+        } else {
+            customKnob.frame = knob.insetBy(dx: 3.5, dy: 2)
+            customTrack.frame = slot.insetBy(dx: 2, dy: 1)
+            customKnob.cornerRadius = customKnob.frame.width / 2
+        }
+
+        let scrollable = canScroll
+        customKnob.isHidden = !scrollable
+        customTrack.isHidden = !scrollable || (!isHovered && !isDragging)
+
+        updateColors()
+        CATransaction.commit()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect],
+                                  owner: self,
+                                  userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        isHovered = true
+        wakeToFullOpacity(animated: true)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        if !isHovered {
+            isHovered = true
+            wakeToFullOpacity(animated: true)
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        isHovered = false
+        if !isDragging {
+            scheduleFade()
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, canScroll else { return nil }
+        guard let superview else { return nil }
+        let local = convert(point, from: superview)
+        if bounds.contains(local) {
+            return self
+        }
+        return nil
+    }
+
+    override func testPart(_ point: NSPoint) -> NSScroller.Part {
+        guard bounds.contains(point), canScroll else { return .noPart }
+        let knob = rect(for: .knob)
+        if knob.contains(point) {
+            return .knob
+        }
+        if rect(for: .knobSlot).contains(point) {
+            let isHoriz = bounds.width > bounds.height
+            if isHoriz {
+                return point.x < knob.minX ? .decrementPage : .incrementPage
+            } else {
+                let isFlipped = parentScrollView?.contentView.isFlipped ?? true
+                return isFlipped ? (point.y < knob.minY ? .decrementPage : .incrementPage)
+                                 : (point.y < knob.minY ? .incrementPage : .decrementPage)
+            }
+        }
+        return .noPart
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let scrollView = parentScrollView, canScroll else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        let local = convert(event.locationInWindow, from: nil)
+        let knob = rect(for: .knob)
+        let isHoriz = bounds.width > bounds.height
+
+        wakeToFullOpacity(animated: false)
+        isDragging = true
+
+        // 无论点击在滑块上还是滑块稍宽判定区，只要在滑块范围内，均作为滑块拖拽处理
+        let isOnKnob = isHoriz ? (local.x >= knob.minX - 4 && local.x <= knob.maxX + 4)
+                               : (local.y >= knob.minY - 4 && local.y <= knob.maxY + 4)
+
+        if isOnKnob {
+            trackKnobDrag(with: event, scrollView: scrollView, isHoriz: isHoriz)
+        } else {
+            // 点击滑道空白区域：直接按页滚动
+            let isBefore = isHoriz ? (local.x < knob.minX) : (local.y < knob.minY)
+            let clipSize = scrollView.contentView.bounds.size
+            let docSize = scrollView.documentView?.frame.size ?? clipSize
+            let pageDelta = 0.85 * Double(isHoriz ? clipSize.width : clipSize.height)
+            let maxScroll = max(1.0, Double(isHoriz ? (docSize.width - clipSize.width) : (docSize.height - clipSize.height)))
+            let fractionDelta = pageDelta / maxScroll
+
+            let newFraction = isBefore ? max(0.0, doubleValue - fractionDelta) : min(1.0, doubleValue + fractionDelta)
+            scroll(toFraction: newFraction, scrollView: scrollView, isHoriz: isHoriz)
+        }
+
+        isDragging = false
+        if !isHovered {
+            scheduleFade()
+        }
+    }
+
+    private func trackKnobDrag(with initialEvent: NSEvent, scrollView: NSScrollView, isHoriz: Bool) {
+        guard let window else { return }
+        let slot = rect(for: .knobSlot)
+        let knob = rect(for: .knob)
+
+        let initialFraction = doubleValue
+        let initialMouseWindow = initialEvent.locationInWindow
+        let trackLength = isHoriz ? max(1, slot.width - knob.width) : max(1, slot.height - knob.height)
+
+        while true {
+            guard let nextEvent = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { break }
+            if nextEvent.type == .leftMouseUp {
+                break
+            }
+            let currentMouseWindow = nextEvent.locationInWindow
+            let delta: CGFloat = isHoriz ? (currentMouseWindow.x - initialMouseWindow.x)
+                                         : (initialMouseWindow.y - currentMouseWindow.y)
+            let fractionDelta = Double(delta / trackLength)
+            let newFraction = min(1.0, max(0.0, initialFraction + fractionDelta))
+            scroll(toFraction: newFraction, scrollView: scrollView, isHoriz: isHoriz)
+        }
+    }
+
+    private func scroll(toFraction fraction: Double, scrollView: NSScrollView, isHoriz: Bool) {
+        let clip = scrollView.contentView
+        let isFlipped = clip.isFlipped
+        guard let docView = scrollView.documentView else { return }
+        let docSize = docView.frame.size
+        let clipSize = clip.bounds.size
+
+        var pt = clip.bounds.origin
+        if isHoriz {
+            let maxScrollX = max(0, docSize.width - clipSize.width)
+            pt.x = CGFloat(fraction) * maxScrollX
+        } else {
+            let maxScrollY = max(0, docSize.height - clipSize.height)
+            if isFlipped {
+                pt.y = CGFloat(fraction) * maxScrollY
+            } else {
+                pt.y = (1.0 - CGFloat(fraction)) * maxScrollY
+            }
+        }
+        clip.scroll(to: pt)
+        scrollView.reflectScrolledClipView(clip)
+        updateCustomLayers()
+    }
+
+    func wakeToFullOpacity(animated: Bool) {
+        fadeWorkItem?.cancel()
+        fadeWorkItem = nil
+        let targetAlpha: CGFloat = 1.0
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.15
+                self.animator().alphaValue = targetAlpha
+            }
+        } else {
+            alphaValue = targetAlpha
+        }
+        updateColors()
+        updateCustomLayers()
+    }
+
+    func scheduleFade() {
+        fadeWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, !self.isHovered, !self.isDragging else { return }
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.3
+                self.animator().alphaValue = 0.4
+            }
+            self.updateColors()
+            self.updateCustomLayers()
+        }
+        fadeWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+}
+
+/// 始终使用悬浮滚动条（Overlay Scroller）的滚动容器：
+/// 即使外接鼠标或系统开启「始终显示滚动条」，也不在底部或右侧预留固定空白轨道槽位。
+/// 滚动条默认半透明常驻悬浮在边缘，鼠标移入/拖拽/滚动时透明度自动恢复正常，且支持灵敏点击与拖拽。
+class OverlayScrollView: NSScrollView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureOverlayScrollers()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureOverlayScrollers()
+    }
+
+    private func configureOverlayScrollers() {
+        super.scrollerStyle = .overlay
+        super.autohidesScrollers = false
+        verticalScroller = OverlayScroller()
+        horizontalScroller = OverlayScroller()
+        contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(handleScrollBoundsChanged),
+                                               name: NSView.boundsDidChangeNotification,
+                                               object: contentView)
+    }
+
+    @objc private func handleScrollBoundsChanged() {
+        (verticalScroller as? OverlayScroller)?.wakeToFullOpacity(animated: true)
+        (verticalScroller as? OverlayScroller)?.scheduleFade()
+        (horizontalScroller as? OverlayScroller)?.wakeToFullOpacity(animated: true)
+        (horizontalScroller as? OverlayScroller)?.scheduleFade()
+    }
+
+    override var autohidesScrollers: Bool {
+        get { false }
+        set { super.autohidesScrollers = false }
+    }
+
+    override var hasVerticalScroller: Bool {
+        didSet {
+            if hasVerticalScroller && (verticalScroller as? OverlayScroller) == nil {
+                verticalScroller = OverlayScroller()
+            }
+        }
+    }
+
+    override var hasHorizontalScroller: Bool {
+        didSet {
+            if hasHorizontalScroller && (horizontalScroller as? OverlayScroller) == nil {
+                horizontalScroller = OverlayScroller()
+            }
+        }
+    }
+
+    override var scrollerStyle: NSScroller.Style {
+        get { .overlay }
+        set { super.scrollerStyle = .overlay }
+    }
+
+    override func tile() {
+        super.scrollerStyle = .overlay
+        if hasVerticalScroller && (verticalScroller as? OverlayScroller) == nil {
+            verticalScroller = OverlayScroller()
+        }
+        if hasHorizontalScroller && (horizontalScroller as? OverlayScroller) == nil {
+            horizontalScroller = OverlayScroller()
+        }
+        super.tile()
+        if let vs = verticalScroller {
+            addSubview(vs, positioned: .above, relativeTo: contentView)
+        }
+        if let hs = horizontalScroller {
+            addSubview(hs, positioned: .above, relativeTo: contentView)
+        }
+    }
+}

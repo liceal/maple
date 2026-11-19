@@ -461,7 +461,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             labelWidth: labelWidth,
             slider: iconSizeSlider,
             valueLabel: iconSizeValueLabel,
-            min: 48,
+            min: 32,
             max: 128,
             action: #selector(iconSliderChanged)
         )
@@ -474,7 +474,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             slider: rowHeightSlider,
             valueLabel: rowHeightValueLabel,
             min: 20,
-            max: 36,
+            max: 38,
             action: #selector(rowHeightSliderChanged)
         )
         stack.addArrangedSubview(listSliderRow)
