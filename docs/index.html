@@ -174,22 +174,32 @@
                 </a>
             </div>
 
-            <!-- 星露谷公告栏木牌终端框 + 右侧小问号帮助按钮 -->
-            <div class="inline-flex flex-wrap items-center justify-center gap-2 max-w-full">
+            <!-- 星露谷公告栏木牌终端框（一键脚本 + Homebrew）与右侧小问号帮助按钮 -->
+            <div class="w-full max-w-lg flex flex-col items-center gap-2">
                 <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#fef8ed] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] text-xs font-mono text-[#431f0a] max-w-full overflow-hidden">
                     <span class="text-[#c2410c] font-black shrink-0">$</span>
-                    <span id="brew-cmd" class="truncate">curl -fsSL https://liceal.github.io/maple/install.sh | bash</span>
-                    <button onclick="copyCmd('brew-cmd', 'copy-text')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#dfc199] border border-[#733c19] text-[11px] font-sans font-bold text-[#431f0a] shadow-[0_1px_0_#54270f] transition-all">
-                        <span id="copy-text" data-i18n="copy_btn">复制</span>
+                    <span id="curl-cmd" class="truncate">curl -fsSL https://liceal.github.io/maple/install.sh | bash</span>
+                    <button onclick="copyCmd('curl-cmd', 'copy-curl-text')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#dfc199] border border-[#733c19] text-[11px] font-sans font-bold text-[#431f0a] shadow-[0_1px_0_#54270f] transition-all">
+                        <span id="copy-curl-text" data-i18n="copy_btn">复制</span>
                     </button>
                 </div>
 
-                <!-- 问号帮助按钮（点击弹出修复流程与工具弹窗） -->
-                <button onclick="openHelpModal()" data-i18n-title="help_btn_tip" title="首次打开提示身份不明或已损坏？点击查看解决流程与工具"
-                        class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#fef8ed] hover:bg-[#fff9f0] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] active:translate-y-[2px] active:shadow-[0_1px_0_#4d240c] transition text-xs font-bold text-[#54270f] cursor-pointer select-none">
-                    <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-[#c2531a] text-[#fff9f0] text-[11px] font-black leading-none">?</span>
-                    <span data-i18n="help_btn_label" class="text-[11px]">首次打不开</span>
-                </button>
+                <div class="inline-flex flex-wrap items-center justify-center gap-2 max-w-full">
+                    <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#fef8ed] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] text-xs font-mono text-[#431f0a] max-w-full overflow-hidden">
+                        <span class="text-[#c2410c] font-black shrink-0">$</span>
+                        <span id="brew-cmd" class="truncate">brew install liceal/tap/maple</span>
+                        <button onclick="copyCmd('brew-cmd', 'copy-text')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#dfc199] border border-[#733c19] text-[11px] font-sans font-bold text-[#431f0a] shadow-[0_1px_0_#54270f] transition-all">
+                            <span id="copy-text" data-i18n="copy_btn">复制</span>
+                        </button>
+                    </div>
+
+                    <!-- 问号帮助按钮（点击弹出修复流程与工具弹窗） -->
+                    <button onclick="openHelpModal()" data-i18n-title="help_btn_tip" title="首次打开提示身份不明或已损坏？点击查看解决流程与工具"
+                            class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#fef8ed] hover:bg-[#fff9f0] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] active:translate-y-[2px] active:shadow-[0_1px_0_#4d240c] transition text-xs font-bold text-[#54270f] cursor-pointer select-none">
+                        <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-[#c2531a] text-[#fff9f0] text-[11px] font-black leading-none">?</span>
+                        <span data-i18n="help_btn_label" class="text-[11px]">首次打不开</span>
+                    </button>
+                </div>
             </div>
         </section>
 
@@ -289,6 +299,12 @@
                     <div class="truncate"><span class="text-[#e59849] select-none">$ </span><span id="modal-curl-cmd">curl -fsSL https://liceal.github.io/maple/install.sh | bash</span></div>
                     <button onclick="copyCmd('modal-curl-cmd', 'copy-modal-curl')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#f7dfbe] text-[#431f0a] font-sans font-bold text-[10.5px] transition">
                         <span id="copy-modal-curl" data-i18n="copy_btn">复制</span>
+                    </button>
+                </div>
+                <div class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-[#2b180c] text-[#fce8c8] font-mono text-[11px]">
+                    <div class="truncate"><span class="text-[#e59849] select-none">$ </span><span id="modal-brew-cmd">brew install liceal/tap/maple</span></div>
+                    <button onclick="copyCmd('modal-brew-cmd', 'copy-modal-brew')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#f7dfbe] text-[#431f0a] font-sans font-bold text-[10.5px] transition">
+                        <span id="copy-modal-brew" data-i18n="copy_btn">复制</span>
                     </button>
                 </div>
             </div>
