@@ -181,7 +181,10 @@
                         <button type="button" id="tab-curl" onclick="switchInstallTab('curl')" class="px-1.5 py-0.5 rounded bg-[#733c19] text-[#fef8ed] shadow-sm transition-all cursor-pointer">curl</button>
                         <button type="button" id="tab-brew" onclick="switchInstallTab('brew')" class="px-1.5 py-0.5 rounded text-[#683315] hover:text-[#431f0a] transition-all cursor-pointer">brew</button>
                     </div>
-                    <span id="install-cmd" class="flex-1 min-w-0 truncate text-left">curl -fsSL https://liceal.github.io/maple/install.sh | bash</span>
+                    <input id="install-cmd" type="text" readonly
+                           value="curl -fsSL https://liceal.github.io/maple/install.sh | bash"
+                           aria-label="Install command"
+                           class="flex-1 min-w-0 bg-transparent border-none outline-none focus:outline-none text-xs font-mono text-[#431f0a] text-left p-0 m-0" />
                     <button onclick="copyCmd('install-cmd', 'copy-text')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#dfc199] border border-[#733c19] text-[11px] font-sans font-bold text-[#431f0a] shadow-[0_1px_0_#54270f] transition-all cursor-pointer">
                         <span id="copy-text" data-i18n="copy_btn">复制</span>
                     </button>
@@ -713,11 +716,11 @@
             const inactiveCls = 'px-1.5 py-0.5 rounded text-[#683315] hover:text-[#431f0a] transition-all cursor-pointer';
 
             if (mode === 'brew') {
-                cmdEl.textContent = 'brew install liceal/tap/maple';
+                cmdEl.value = 'brew install liceal/tap/maple';
                 tabBrew.className = activeCls;
                 tabCurl.className = inactiveCls;
             } else {
-                cmdEl.textContent = 'curl -fsSL https://liceal.github.io/maple/install.sh | bash';
+                cmdEl.value = 'curl -fsSL https://liceal.github.io/maple/install.sh | bash';
                 tabCurl.className = activeCls;
                 tabBrew.className = inactiveCls;
             }
@@ -727,7 +730,8 @@
             const cmdEl = document.getElementById(cmdId);
             const textEl = document.getElementById(labelId);
             if (!cmdEl || !textEl) return;
-            navigator.clipboard.writeText(cmdEl.textContent).then(() => {
+            const cmdText = cmdEl.value !== undefined ? cmdEl.value : cmdEl.textContent;
+            navigator.clipboard.writeText(cmdText).then(() => {
                 let lang = 'zh-CN';
                 try { lang = localStorage.getItem('maple_lang') || 'zh-CN'; } catch(e) {}
                 const data = i18n[lang] || i18n['zh-CN'];
