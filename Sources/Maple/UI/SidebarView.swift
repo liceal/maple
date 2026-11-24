@@ -507,10 +507,12 @@ final class SidebarView: NSView {
                 reveal.target = self
                 menu.addItem(reveal)
 
-                let terminal = NSMenuItem(title: "在“终端”中打开".localized, action: #selector(openInTerminalClicked), keyEquivalent: "")
+                let currentTerm = TerminalManager.shared.currentTerminal()
+                let terminal = NSMenuItem(title: String(format: "在“%@”中打开".localized, currentTerm.displayName), action: #selector(openInTerminalClicked), keyEquivalent: "")
                 terminal.target = self
                 terminal.representedObject = url
                 menu.addItem(terminal)
+                appendSidebarOtherTerminalsMenu(to: menu, targetURL: url, currentTerm: currentTerm)
 
                 let copyPath = NSMenuItem(title: "拷贝路径".localized, action: #selector(copyPathClicked), keyEquivalent: "C")
                 copyPath.keyEquivalentModifierMask = [.command, .option]
@@ -621,10 +623,12 @@ final class SidebarView: NSView {
             reveal.target = self
             menu.addItem(reveal)
 
-            let terminal = NSMenuItem(title: "在“终端”中打开".localized, action: #selector(openInTerminalClicked), keyEquivalent: "")
+            let currentTerm = TerminalManager.shared.currentTerminal()
+            let terminal = NSMenuItem(title: String(format: "在“%@”中打开".localized, currentTerm.displayName), action: #selector(openInTerminalClicked), keyEquivalent: "")
             terminal.target = self
             terminal.representedObject = url
             menu.addItem(terminal)
+            appendSidebarOtherTerminalsMenu(to: menu, targetURL: url, currentTerm: currentTerm)
 
             let copyPath = NSMenuItem(title: "拷贝路径".localized, action: #selector(copyPathClicked), keyEquivalent: "C")
             copyPath.keyEquivalentModifierMask = [.command, .option]
@@ -1348,9 +1352,38 @@ final class SidebarView: NSView {
 
     @objc private func openInTerminalClicked(_ sender: NSMenuItem) {
         guard let url = (sender.representedObject as? URL) ?? contextNode?.url else { return }
-        if let termURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") {
-            NSWorkspace.shared.open([url], withApplicationAt: termURL, configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
+        TerminalManager.shared.open(directoryURL: url)
+    }
+
+    @objc private func openInSpecificTerminalClicked(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? (url: URL, term: InstalledTerminal) else { return }
+        TerminalManager.shared.open(directoryURL: payload.url, using: payload.term)
+    }
+
+    @objc private func openTerminalPreferencesClicked() {
+        NotificationCenter.default.post(name: .openTerminalSettingsRequested, object: nil)
+    }
+
+    private func appendSidebarOtherTerminalsMenu(to menu: NSMenu, targetURL: URL, currentTerm: InstalledTerminal) {
+        let otherTerms = TerminalManager.shared.scanInstalledTerminals().filter { $0.id != currentTerm.id }
+        guard !otherTerms.isEmpty else { return }
+        let otherMenu = NSMenu()
+        otherMenu.autoenablesItems = false
+        for term in otherTerms {
+            let item = NSMenuItem(title: term.displayName, action: #selector(openInSpecificTerminalClicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = (url: targetURL, term: term)
+            item.image = term.icon
+            otherMenu.addItem(item)
         }
+        otherMenu.addItem(.separator())
+        let prefItem = NSMenuItem(title: "设置默认终端…".localized, action: #selector(openTerminalPreferencesClicked), keyEquivalent: "")
+        prefItem.target = self
+        otherMenu.addItem(prefItem)
+
+        let otherItem = NSMenuItem(title: "其他终端".localized, action: nil, keyEquivalent: "")
+        otherItem.submenu = otherMenu
+        menu.addItem(otherItem)
     }
 
     @objc private func copyPathClicked(_ sender: NSMenuItem) {

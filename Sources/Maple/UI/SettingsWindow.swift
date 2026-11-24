@@ -31,6 +31,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private let iconSizeValueLabel = NSTextField(labelWithString: "")
     private let rowHeightSlider = NSSlider()
     private let rowHeightValueLabel = NSTextField(labelWithString: "")
+    private var terminalPopUpButton: NSPopUpButton?
+    private var defaultManagerStatusLabel = NSTextField(labelWithString: "")
+    private var setDefaultManagerBtn = NSButton()
+    private var restoreFinderBtn = NSButton()
+    private var externalOpenRadios: [NSButton] = []
 
     // MARK: - 权限管理控件
     private var permissionRows: [PermissionItemRow] = []
@@ -132,6 +137,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         NotificationCenter.default.addObserver(forName: .languageDidChange, object: nil, queue: .main) { [weak self] _ in
             self?.handleLanguageDidChange()
         }
+        NotificationCenter.default.addObserver(forName: .defaultFileManagerDidChange, object: nil, queue: .main) { [weak self] _ in
+            self?.updateDefaultManagerStatus()
+        }
     }
 
     private func handleLanguageDidChange() {
@@ -147,11 +155,17 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         syncDisplayControls()
     }
 
-    func show(relativeTo parentWindow: NSWindow?) {
+    func show(relativeTo parentWindow: NSWindow?, categoryId: String? = nil) {
         window.appearance = NSApp.appearance
         refreshPermissionStatuses()
         refreshIndexCount()
         syncDisplayControls()
+        populateTerminalPopUp()
+
+        if let categoryId, let idx = categories.firstIndex(where: { $0.id == categoryId }) {
+            sidebarTable.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+            showCategory(id: categoryId)
+        }
 
         if let parent = parentWindow {
             let pf = parent.frame
@@ -373,6 +387,48 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         languageRadios = [langSys, langZh, langEn, langZht, langJa]
         let languageGroup = makeControlRow(label: "语言：".localized, labelWidth: labelWidth, views: languageRadios)
         stack.addArrangedSubview(languageGroup)
+
+        // 默认终端工具：[Popup: Warp / 终端 (系统内置)...]
+        let terminalPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+        terminalPopUp.translatesAutoresizingMaskIntoConstraints = false
+        terminalPopUp.target = self
+        terminalPopUp.action = #selector(terminalPopUpChanged(_:))
+        terminalPopUp.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        terminalPopUp.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        self.terminalPopUpButton = terminalPopUp
+        populateTerminalPopUp()
+
+        let terminalRow = makeControlRow(label: "默认终端：".localized, labelWidth: labelWidth, views: [terminalPopUp])
+        stack.addArrangedSubview(terminalRow)
+
+        // 默认文件管理器：[设为默认] [恢复访达] ● 已设为默认 [?]
+        let setDefBtn = NSButton(title: "设为默认".localized, target: self, action: #selector(setDefaultManagerClicked))
+        setDefBtn.bezelStyle = .rounded
+        self.setDefaultManagerBtn = setDefBtn
+
+        let restoreBtn = NSButton(title: "恢复访达".localized, target: self, action: #selector(restoreFinderClicked))
+        restoreBtn.bezelStyle = .rounded
+        self.restoreFinderBtn = restoreBtn
+
+        defaultManagerStatusLabel.font = .systemFont(ofSize: 11.5)
+        updateDefaultManagerStatus()
+
+        let helpBtn = NSButton()
+        helpBtn.bezelStyle = .helpButton
+        helpBtn.title = ""
+        helpBtn.target = self
+        helpBtn.action = #selector(showDefaultManagerHelp(_:))
+        helpBtn.toolTip = "点击查看默认文件管理器生效说明".localized
+
+        let defManagerRow = makeControlRow(label: "默认管理器：".localized, labelWidth: labelWidth, views: [setDefBtn, restoreBtn, defaultManagerStatusLabel, helpBtn])
+        stack.addArrangedSubview(defManagerRow)
+
+        // 外部打开时：在新标签页打开 / 在新独立窗口打开
+        let radioExtTab = NSButton(radioButtonWithTitle: "在新标签页打开".localized, target: self, action: #selector(externalOpenRadioSelected(_:)))
+        let radioExtWindow = NSButton(radioButtonWithTitle: "在新独立窗口打开".localized, target: self, action: #selector(externalOpenRadioSelected(_:)))
+        externalOpenRadios = [radioExtTab, radioExtWindow]
+        let externalOpenRow = makeControlRow(label: "外部打开时：".localized, labelWidth: labelWidth, views: externalOpenRadios)
+        stack.addArrangedSubview(externalOpenRow)
 
         // 边栏图标大小：小 / 中 / 大
         let iconSmall = NSButton(radioButtonWithTitle: "小".localized, target: self, action: #selector(sidebarIconRadioSelected(_:)))
@@ -726,18 +782,20 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         let section = makeCardSection(title: "Maple 核心快捷键一览".localized, subtitle: "支持标准 macOS 快捷键及 Windows 习惯键位。".localized)
 
         let shortcuts: [(key: String, desc: String)] = [
-            ("⌘N", "新建主窗口"),
-            ("⌘W", "关闭当前窗口（后台保持运行）"),
-            ("⌘Q", "彻底退出 Maple"),
-            ("⌘F", "打开全局秒级搜索"),
-            ("⌘1 / ⌘2 / ⌘3", "切换 列表 / 图标 / 分栏 视图"),
-            ("⌘⇧.", "显示 / 隐藏隐藏文件"),
-            ("⌘⌫", "将选中项移至废纸篓"),
-            ("⌥⌘C", "拷贝选中文件完整路径"),
-            ("⌥⌘T", "在终端中打开当前目录"),
-            ("⇧⌘R", "在系统访达中定位并显示"),
-            ("Ctrl+Z", "文本撤销（Windows 习惯）"),
-            ("Ctrl+⇧+Z", "文本重做（Windows 习惯）")
+            ("⌘N", "新建主窗口".localized),
+            ("⌘W", "关闭当前窗口（后台保持运行）".localized),
+            ("⌘Q", "彻底退出 Maple".localized),
+            ("⌘F", "打开全局秒级搜索".localized),
+            ("⌘[ / ⌘← / 鼠标侧键", "后退至上一级历史".localized),
+            ("⌘] / ⌘→ / 鼠标侧键", "前进至下一级历史".localized),
+            ("⌘1 / ⌘2 / ⌘3", "切换 列表 / 图标 / 分栏 视图".localized),
+            ("⌘⇧.", "显示 / 隐藏隐藏文件".localized),
+            ("⌘⌫", "将选中项移至废纸篓".localized),
+            ("⌥⌘C", "拷贝选中文件完整路径".localized),
+            ("⌥⌘T", "在终端中打开当前目录".localized),
+            ("⇧⌘R", "在系统访达中定位并显示".localized),
+            ("Ctrl+Z", "文本撤销（Windows 习惯）".localized),
+            ("Ctrl+⇧+Z", "文本重做（Windows 习惯）".localized)
         ]
 
         for s in shortcuts {
@@ -1240,6 +1298,120 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         iconSizeValueLabel.stringValue = "\(Int(AppSettings.gridIconSize)) pt"
         rowHeightSlider.doubleValue = Double(AppSettings.listRowHeight)
         rowHeightValueLabel.stringValue = "\(Int(AppSettings.listRowHeight)) pt"
+        populateTerminalPopUp()
+        updateDefaultManagerStatus()
+
+        let extMode = AppSettings.externalFolderOpenMode
+        for (idx, r) in externalOpenRadios.enumerated() {
+            if idx == 0 && extMode == "tab" { r.state = .on }
+            else if idx == 1 && extMode == "window" { r.state = .on }
+            else { r.state = .off }
+        }
+    }
+
+    // MARK: - 终端应用设置交互
+
+    private func populateTerminalPopUp() {
+        guard let popUp = terminalPopUpButton else { return }
+        popUp.removeAllItems()
+
+        let current = TerminalManager.shared.currentTerminal()
+        let installed = TerminalManager.shared.scanInstalledTerminals()
+
+        for term in installed {
+            let item = NSMenuItem(title: term.displayName, action: nil, keyEquivalent: "")
+            item.image = term.icon
+            item.representedObject = term.id
+            popUp.menu?.addItem(item)
+            if term.id == current.id || term.bundleIdentifier == AppSettings.defaultTerminalBundleId {
+                popUp.select(item)
+            }
+        }
+
+        popUp.menu?.addItem(.separator())
+        let customItem = NSMenuItem(title: "浏览其他应用…".localized, action: nil, keyEquivalent: "")
+        customItem.representedObject = "custom_browse"
+        popUp.menu?.addItem(customItem)
+
+        if popUp.selectedItem == nil {
+            if let first = popUp.itemArray.first(where: { ($0.representedObject as? String) != "custom_browse" }) {
+                popUp.select(first)
+            }
+        }
+    }
+
+    @objc private func terminalPopUpChanged(_ sender: NSPopUpButton) {
+        guard let selected = sender.selectedItem,
+              let id = selected.representedObject as? String else { return }
+
+        if id == "custom_browse" {
+            let panel = NSOpenPanel()
+            panel.title = "选择终端应用程序".localized
+            panel.prompt = "选择".localized
+            panel.canChooseFiles = true
+            panel.canChooseDirectories = false
+            panel.allowsMultipleSelection = false
+            panel.allowedFileTypes = ["app"]
+            panel.directoryURL = URL(fileURLWithPath: "/Applications")
+            panel.beginSheetModal(for: window) { [weak self] response in
+                guard let self = self else { return }
+                if response == .OK, let appURL = panel.url {
+                    AppSettings.customTerminalAppPath = appURL.path
+                    AppSettings.defaultTerminalBundleId = appURL.path
+                    self.populateTerminalPopUp()
+                } else {
+                    self.populateTerminalPopUp()
+                }
+            }
+            return
+        }
+
+        AppSettings.defaultTerminalBundleId = id
+    }
+
+    // MARK: - 默认文件管理器与外部打开模式交互
+
+    @objc private func setDefaultManagerClicked() {
+        DefaultFileManager.setAsDefault()
+        updateDefaultManagerStatus()
+    }
+
+    @objc private func restoreFinderClicked() {
+        DefaultFileManager.restoreFinder()
+        updateDefaultManagerStatus()
+    }
+
+    @objc private func showDefaultManagerHelp(_ sender: NSButton) {
+        let alert = NSAlert()
+        alert.messageText = "默认文件管理器生效说明".localized
+        alert.informativeText = "• 支持直接接管打开的场景：\n  1. 终端命令行运行 open 命令（例如 open . 或 open ~/Downloads）；\n  2. Spotlight（聚焦搜索）或 Raycast 等启动器搜索文件夹后回车打开；\n  3. 系统任意文件/文件夹上右键「打开方式」选择 Maple。\n\n• 受 macOS 系统机制限制的场景：\n  1. 桌面双击文件夹图标：桌面是访达的私有画布，由访达硬编码直接打开；\n  2. Chrome、微信等软件内点击“在访达中显示”：调用了系统硬绑定访达的专用接口，仍由原生访达打开。".localized
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "好".localized)
+        alert.beginSheetModal(for: window, completionHandler: nil)
+    }
+
+    private func updateDefaultManagerStatus() {
+        let isMaple = DefaultFileManager.isMapleDefault
+        if isMaple {
+            defaultManagerStatusLabel.stringValue = "● 已设为默认".localized
+            defaultManagerStatusLabel.textColor = .systemGreen
+            setDefaultManagerBtn.isEnabled = false
+            restoreFinderBtn.isEnabled = true
+        } else {
+            defaultManagerStatusLabel.stringValue = "○ 默认是系统访达".localized
+            defaultManagerStatusLabel.textColor = .secondaryLabelColor
+            setDefaultManagerBtn.isEnabled = true
+            restoreFinderBtn.isEnabled = false
+        }
+    }
+
+    @objc private func externalOpenRadioSelected(_ sender: NSButton) {
+        externalOpenRadios.forEach { $0.state = ($0 == sender) ? .on : .off }
+        if sender == externalOpenRadios.first {
+            AppSettings.externalFolderOpenMode = "tab"
+        } else {
+            AppSettings.externalFolderOpenMode = "window"
+        }
     }
 
     @objc private func appearanceRadioSelected(_ sender: NSButton) {

@@ -818,13 +818,13 @@ final class FileListView: NSView {
         }
 
         menu.addItem(.separator())
-        let fitAll = NSMenuItem(title: "自动适配所有列宽", action: #selector(autoFitAllColumns), keyEquivalent: "")
+        let fitAll = NSMenuItem(title: "自动适配所有列宽".localized, action: #selector(autoFitAllColumns), keyEquivalent: "")
         fitAll.target = self
         menu.addItem(fitAll)
-        let restore = NSMenuItem(title: "恢复到默认", action: #selector(restoreDefaultColumns), keyEquivalent: "")
+        let restore = NSMenuItem(title: "恢复到默认".localized, action: #selector(restoreDefaultColumns), keyEquivalent: "")
         restore.target = self
         menu.addItem(restore)
-        let setDefault = NSMenuItem(title: "设置为默认", action: #selector(setDefaultColumns), keyEquivalent: "")
+        let setDefault = NSMenuItem(title: "设置为默认".localized, action: #selector(setDefaultColumns), keyEquivalent: "")
         setDefault.target = self
         menu.addItem(setDefault)
         return menu
@@ -1286,7 +1286,7 @@ final class InlineRenameFieldCell: NSTextFieldCell {
 /// - 仅在进入重命名时挂载到行/图标中，退出时立即从父视图移除（彻底杜绝 I-beam 竖线光标残留）；
 /// - 优先绑定 delegate，支持回车/小键盘 Enter/Tab 确认、Esc 取消、点击外部自动确认保存；
 /// - 正确处理 UTF-16 文件主名选中范围（排除扩展名，文件夹或点文件全选）。
-final class InlineRenameField: NSTextField, NSTextFieldDelegate {
+final class InlineRenameField: NSTextField, NSTextFieldDelegate, NSTextViewDelegate {
     static weak var activeField: InlineRenameField?
 
     let originalText: String
@@ -1347,16 +1347,18 @@ final class InlineRenameField: NSTextField, NSTextFieldDelegate {
     }
 
     override func setFrameSize(_ newSize: NSSize) {
+        guard abs(frame.width - newSize.width) > 0.5 || abs(frame.height - newSize.height) > 0.5 else { return }
         super.setFrameSize(newSize)
         let inner = cell?.drawingRect(forBounds: bounds) ?? bounds.insetBy(dx: 2, dy: 1)
         for sub in subviews {
-            sub.frame = inner
+            if sub.frame != inner {
+                sub.frame = inner
+            }
         }
         if let editor = currentEditor() as? NSTextView {
             if editor.frame.width < inner.width {
                 editor.frame.size.width = inner.width
             }
-            editor.textContainer?.containerSize = NSSize(width: max(inner.width, 2000), height: max(18, inner.height))
         }
     }
 
@@ -1407,6 +1409,12 @@ final class InlineRenameField: NSTextField, NSTextFieldDelegate {
     private func configureEditor(_ editor: NSTextView, selectionRange: NSRange?) {
         editor.allowsUndo = true
         editor.isFieldEditor = true
+        editor.delegate = self
+        editor.isHorizontallyResizable = true
+        editor.isVerticallyResizable = false
+        editor.maxSize = NSSize(width: 10000, height: 1000)
+        editor.textContainer?.containerSize = NSSize(width: 10000, height: 1000)
+        editor.textContainer?.widthTracksTextView = false
         editor.textColor = .labelColor
         editor.insertionPointColor = .labelColor
         editor.drawsBackground = true
@@ -1485,11 +1493,74 @@ final class InlineRenameField: NSTextField, NSTextFieldDelegate {
         callback?(text, commit)
     }
 
+    // MARK: - NSTextViewDelegate（对齐访达：文件名最大 255 字节）
+
+    func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        guard let replacement = replacementString else { return true }
+
+        // 访达同款：禁止键入冒号“:”与斜杠“/”，蜂鸣拒绝
+        if replacement.contains(":") || replacement.contains("/") {
+            NSSound.beep()
+            return false
+        }
+
+        let current = (textView.string as NSString)
+        let proposed = current.replacingCharacters(in: affectedCharRange, with: replacement)
+
+        let maxBytes = 255
+        if proposed.utf8.count > maxBytes {
+            NSSound.beep()
+
+            let currentBytesExcludingRange = current.replacingCharacters(in: affectedCharRange, with: "").utf8.count
+            let remainingBytes = max(0, maxBytes - currentBytesExcludingRange)
+
+            if remainingBytes > 0 && !replacement.isEmpty {
+                var safeReplacement = ""
+                var acc = 0
+                for ch in replacement {
+                    let chBytes = String(ch).utf8.count
+                    if acc + chBytes <= remainingBytes {
+                        safeReplacement.append(ch)
+                        acc += chBytes
+                    } else {
+                        break
+                    }
+                }
+                if !safeReplacement.isEmpty {
+                    textView.replaceCharacters(in: affectedCharRange, with: safeReplacement)
+                    controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: self))
+                }
+            }
+            return false
+        }
+        return true
+    }
+
     // MARK: - NSTextFieldDelegate
 
     func controlTextDidChange(_ obj: Notification) {
         guard !didFinish else { return }
-        let current = (currentEditor() as? NSTextView)?.string ?? stringValue
+        var current = (currentEditor() as? NSTextView)?.string ?? stringValue
+        if current.utf8.count > 255 {
+            var safe = ""
+            var acc = 0
+            for ch in current {
+                let chBytes = String(ch).utf8.count
+                if acc + chBytes <= 255 {
+                    safe.append(ch)
+                    acc += chBytes
+                } else {
+                    break
+                }
+            }
+            current = safe
+            if let editor = currentEditor() as? NSTextView {
+                editor.string = safe
+            } else {
+                stringValue = safe
+            }
+            NSSound.beep()
+        }
         onTextChange?(current)
     }
 
@@ -2245,7 +2316,7 @@ private final class ListHeaderBar: NSView {
 
         // 名称列
         let nameRight = layout.nameRect.maxX
-        drawTitle("名称",
+        drawTitle("名称".localized,
                   in: NSRect(x: FileListView.headerNameX - scrollOffsetX,
                              y: 0,
                              width: max(0, nameRight - FileListView.headerNameX),
@@ -2751,12 +2822,18 @@ private final class FileRowCell: NSTableCellView {
             let textW = (currentStr as NSString).size(withAttributes: [.font: font]).width
             let editWidth = min(maxAvailableWidth, max(54, ceil(textW) + 20))
             let editHeight: CGFloat = max(19, iconSize + 3)
-            field.frame = NSRect(x: nameX - 2,
-                                 y: (rowHeight - editHeight) / 2,
-                                 width: editWidth,
-                                 height: editHeight)
+            let targetFrame = NSRect(x: nameX - 2,
+                                     y: (rowHeight - editHeight) / 2,
+                                     width: editWidth,
+                                     height: editHeight)
+            if field.frame != targetFrame {
+                field.frame = targetFrame
+            }
             tagDotsView.isHidden = true
-            title.frame = NSRect(x: nameX, y: (rowHeight - textHeight) / 2, width: editWidth, height: textHeight)
+            let titleTarget = NSRect(x: nameX, y: (rowHeight - textHeight) / 2, width: editWidth, height: textHeight)
+            if title.frame != titleTarget {
+                title.frame = titleTarget
+            }
         } else {
             let titleWidth: CGFloat
             let tagCount = item?.tags.count ?? 0

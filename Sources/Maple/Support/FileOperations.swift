@@ -194,40 +194,53 @@ enum FileOperations {
             return false
         }
 
-        // 1. 非法字符校验（斜杠与冒号）
+        // 0. 长度校验（macOS APFS/HFS+ 文件系统文件名限制 255 字节，对齐访达同款提示）
+        if trimmed.utf8.count > 255 {
+            let alert = NSAlert()
+            alert.messageText = String(format: "不能使用名称“%@”，因为它太长。".localized, trimmed)
+            alert.informativeText = "请尝试使用字符较少，或不含标点符号的名称。".localized
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "好".localized)
+            alert.runModal()
+            return false
+        }
+
+        // 1. 非法字符校验（斜杠与冒号，对齐访达 RN31/RN32）
         if trimmed.contains("/") || trimmed.contains(":") {
             let alert = NSAlert()
-            alert.messageText = "名称中不能包含冒号“:”或斜杠“/”".localized
-            alert.informativeText = "请选取其他名称。".localized
+            alert.messageText = String(format: "不能使用名称“%@”。".localized, trimmed)
+            alert.informativeText = "请尝试使用字符较少，或不含标点符号的名称。".localized
             alert.alertStyle = .warning
+            alert.addButton(withTitle: "好".localized)
             alert.runModal()
             return false
         }
 
-        // 2. 保留名称校验（单独的点或点点）
+        // 2. 保留名称校验（单独的点或点点，对齐访达 RN5）
         if trimmed == "." || trimmed == ".." {
             let alert = NSAlert()
-            alert.messageText = "你不能使用以点“.”开头的保留名称".localized
-            alert.informativeText = String(format: "“%@”已被系统保留。请选取其他名称。".localized, trimmed)
+            alert.messageText = String(format: "不能使用名称“%@”，因为它已被系统保留。".localized, trimmed)
+            alert.informativeText = "请选取其他名称。".localized
             alert.alertStyle = .warning
+            alert.addButton(withTitle: "好".localized)
             alert.runModal()
             return false
         }
 
-        // 3. 点前缀隐藏文件确认与系统保留提示（访达同款）
+        // 3. 点前缀隐藏文件确认与系统保留提示（对齐访达 RN4 / RN3 / RN3.1）
         let oldName = item.name
         if trimmed.hasPrefix(".") && !oldName.hasPrefix(".") {
             if !AppSettings.showHidden {
                 let alert = NSAlert()
-                alert.messageText = "你不能使用以点“.”开头的名称，因为这些名称已被系统保留。请选取其他名称。".localized
+                alert.messageText = "你不能使用以点“.”开头的名称，因为这些名称已被系统预留。请选取其他名称。".localized
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "好".localized)
                 alert.runModal()
                 return false
             } else {
                 let alert = NSAlert()
-                alert.messageText = "确定要使用以“.”开头的名称吗？".localized
-                alert.informativeText = "以“.”开头的名称会被系统视为隐藏文件。".localized
+                alert.messageText = "你确定要使用以点“.”开头的名称吗？".localized
+                alert.informativeText = "系统会将使用此类名称的项目视为不可见的文件。".localized
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "使用“.”".localized)
                 alert.addButton(withTitle: "取消".localized)
@@ -237,18 +250,40 @@ enum FileOperations {
             }
         }
 
-        // 4. 重名校验
+        // 4. 重名校验（对齐访达 RN17）
         let oldURL = item.url
         let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(trimmed)
         if newURL.path == oldURL.path { return false }
 
         if FileManager.default.fileExists(atPath: newURL.path) {
             let alert = NSAlert()
-            alert.messageText = String(format: "名称“%@”已被使用".localized, trimmed)
-            alert.informativeText = "请选取其他名称。".localized
+            alert.messageText = String(format: "名称“%@”已被占用，请选取其他名称。".localized, trimmed)
             alert.alertStyle = .warning
+            alert.addButton(withTitle: "好".localized)
             alert.runModal()
             return false
+        }
+
+        // 5. 扩展名变更二次确认（对齐访达 RN12 / RN14）
+        let oldExt = (oldName as NSString).pathExtension
+        let newExt = (trimmed as NSString).pathExtension
+        let isDirectory = item.isNavigable
+        if !isDirectory && !oldExt.isEmpty && oldExt.caseInsensitiveCompare(newExt) != .orderedSame {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.informativeText = "如果进行这项更改，你的文稿可能会由另一个应用程序打开。".localized
+            if newExt.isEmpty {
+                alert.messageText = String(format: "你确定要移除扩展名“.%@”吗？".localized, oldExt)
+                alert.addButton(withTitle: String(format: "保持 .%@", oldExt).localized)
+                alert.addButton(withTitle: "移除".localized)
+            } else {
+                alert.messageText = String(format: "你确定要将扩展名“.%@”更改为“.%@”吗？".localized, oldExt, newExt)
+                alert.addButton(withTitle: String(format: "保持 .%@", oldExt).localized)
+                alert.addButton(withTitle: String(format: "使用 .%@", newExt).localized)
+            }
+            if alert.runModal() == .alertFirstButtonReturn {
+                return false
+            }
         }
 
         // 5. 执行文件移动（重命名）
@@ -258,7 +293,18 @@ enum FileOperations {
             onSuccess(oldURL, newURL)
             return true
         } catch {
-            NSAlert(error: error).runModal()
+            let nsErr = error as NSError
+            if (nsErr.domain == NSPOSIXErrorDomain && nsErr.code == Int(ENAMETOOLONG)) ||
+               (nsErr.domain == NSCocoaErrorDomain && nsErr.code == CocoaError.fileWriteInvalidFileName.rawValue && trimmed.utf8.count > 255) {
+                let alert = NSAlert()
+                alert.messageText = String(format: "不能使用名称“%@”，因为它太长。".localized, trimmed)
+                alert.informativeText = "请尝试使用字符较少，或不含标点符号的名称。".localized
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "好".localized)
+                alert.runModal()
+            } else {
+                NSAlert(error: error).runModal()
+            }
             return false
         }
     }

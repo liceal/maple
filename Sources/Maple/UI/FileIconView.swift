@@ -1034,7 +1034,10 @@ final class FileIconItem: NSCollectionViewItem {
         let fieldH: CGFloat = 20
         let fieldX = round((view.bounds.width - fieldW) / 2)
         let fieldY = round(label.frame.maxY - fieldH + 2)
-        field.frame = NSRect(x: fieldX, y: max(2, fieldY), width: fieldW, height: fieldH)
+        let targetFrame = NSRect(x: fieldX, y: max(2, fieldY), width: fieldW, height: fieldH)
+        if field.frame != targetFrame {
+            field.frame = targetFrame
+        }
     }
 
     func startInlineEditing() {
@@ -1048,7 +1051,6 @@ final class FileIconItem: NSCollectionViewItem {
         textBubble.isHidden = true
         label.isHidden = true
         view.addSubview(field)
-        view.layoutSubtreeIfNeeded()
         layoutRenameField()
 
         field.onTextChange = { [weak self] _ in

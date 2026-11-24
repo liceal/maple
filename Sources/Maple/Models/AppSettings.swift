@@ -21,9 +21,9 @@ enum SidebarIconSize: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .small:  return "小"
-        case .medium: return "中"
-        case .large:  return "大"
+        case .small:  return "小".localized
+        case .medium: return "中".localized
+        case .large:  return "大".localized
         }
     }
 
@@ -43,9 +43,9 @@ enum SidebarIconStyle: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .colorful:   return "彩色图标"
-        case .category:   return "分区彩色"
-        case .minimalist: return "简约图标"
+        case .colorful:   return "彩色图标".localized
+        case .category:   return "分区彩色".localized
+        case .minimalist: return "简约图标".localized
         }
     }
 }
@@ -786,6 +786,47 @@ enum AppSettings {
     static func removeServer(id: String) {
         savedServers = savedServers.filter { $0.id != id }
     }
+
+    // MARK: - 终端应用设置
+    private static var _defaultTerminalBundleId: String = store.string(forKey: "defaultTerminalBundleId") ?? "auto"
+    /// 默认终端应用标识（"auto" 表示智能推荐，或指定 Bundle ID / 路径）
+    static var defaultTerminalBundleId: String {
+        get { _defaultTerminalBundleId }
+        set {
+            _defaultTerminalBundleId = newValue
+            store.set(newValue, forKey: "defaultTerminalBundleId")
+            NotificationCenter.default.post(name: .terminalSettingsDidChange, object: nil)
+        }
+    }
+
+    private static var _customTerminalAppPath: String? = store.string(forKey: "customTerminalAppPath")
+    /// 自定义终端应用完整路径（.app）
+    static var customTerminalAppPath: String? {
+        get { _customTerminalAppPath }
+        set {
+            _customTerminalAppPath = newValue
+            if let newValue = newValue {
+                store.set(newValue, forKey: "customTerminalAppPath")
+            } else {
+                store.removeObject(forKey: "customTerminalAppPath")
+            }
+            NotificationCenter.default.post(name: .terminalSettingsDidChange, object: nil)
+        }
+    }
+
+    // MARK: - 外部打开模式
+    private static var _externalFolderOpenMode: String = store.string(forKey: "externalFolderOpenMode") ?? "tab"
+    /// 外部应用（如微信、VS Code、浏览器）调起打开文件夹时的行为：
+    /// "tab": 在当前窗口新标签/窗格打开 (默认)
+    /// "window": 在新独立窗口打开
+    static var externalFolderOpenMode: String {
+        get { _externalFolderOpenMode }
+        set {
+            _externalFolderOpenMode = newValue
+            store.set(newValue, forKey: "externalFolderOpenMode")
+            NotificationCenter.default.post(name: .externalFolderOpenModeDidChange, object: nil)
+        }
+    }
 }
 
 extension Notification.Name {
@@ -799,4 +840,8 @@ extension Notification.Name {
     static let paneAppearanceDidChange = Notification.Name("AppSettingsPaneAppearanceDidChange")
     static let itemInfoDidChange = Notification.Name("AppSettingsItemInfoDidChange")
     static let bottomStatusBarDidChange = Notification.Name("AppSettingsBottomStatusBarDidChange")
+    static let terminalSettingsDidChange = Notification.Name("AppSettingsTerminalSettingsDidChange")
+    static let openTerminalSettingsRequested = Notification.Name("AppSettingsOpenTerminalSettingsRequested")
+    static let externalFolderOpenModeDidChange = Notification.Name("AppSettingsExternalFolderOpenModeDidChange")
+    static let defaultFileManagerDidChange = Notification.Name("AppSettingsDefaultFileManagerDidChange")
 }

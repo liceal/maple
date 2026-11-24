@@ -1,80 +1,30 @@
 import AppKit
 import Quartz
 
-// MARK: - 窗口
-
-/// 主窗口：点窗口内任意位置（文件行、空白处、状态栏、工具条都算）都让窗口获得焦点。
-/// 系统默认只有「可接受首次点击」的控件才会顺带切换 key window，点空白处常常只激活
-/// App 而不切窗口，所以这里在派发事件前先自己抢焦点。
-final class MainWindow: NSWindow {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-
-    override func sendEvent(_ event: NSEvent) {
-        switch event.type {
-        case .leftMouseDown, .rightMouseDown:
-            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-            if !isKeyWindow { makeKeyAndOrderFront(nil) }
-            if let field = InlineRenameField.activeField, field.window === self {
-                if !field.containsWindowPoint(event.locationInWindow) {
-                    field.commitAndClose()
-                }
-            }
-        case .leftMouseUp, .rightMouseUp:
-            super.sendEvent(event)
-            if InlineRenameField.activeField == nil {
-                if let hit = contentView?.hitTest(event.locationInWindow) as? SplitterView {
-                    (hit.axis == .vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
-                } else {
-                    NSCursor.arrow.set()
-                }
-            }
-            return
-        case .keyDown:
-            if let field = InlineRenameField.activeField, field.window === self {
-                let hasMarked = (field.currentEditor() as? NSTextView)?.hasMarkedText() ?? false
-                if !hasMarked {
-                    if event.keyCode == 36 || event.keyCode == 76 || event.keyCode == 48 { // Return / Enter / Tab
-                        field.commitAndClose()
-                        return
-                    } else if event.keyCode == 53 { // Escape
-                        field.cancelAndClose()
-                        return
-                    }
-                }
-            }
-        default:
-            break
-        }
-        super.sendEvent(event)
-    }
-}
-
 // MARK: - AppDelegate
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
 
-    private var window: MainWindow!
-    private var container: OpaqueBackgroundView!
-    private var sidebar: SidebarView!
-    private var workspace: WorkspaceArea!
-    private var chromeBar: ChromeBar!
-    private var layoutButton: SquareToolbarButton!
-    private var moreButton: SquareToolbarButton?
-    private var searchButton: SquareToolbarButton!
-    private var navView: ToolbarNavView!
-    private var viewModeView: ToolbarViewModeView!
-    private var displayOptionsPopover: NSPopover?
-    private var layoutPicker: LayoutPickerController?
-    private var searchController: SearchPanelController?
+    static weak var shared: AppDelegate?
+
+    private(set) var windowControllers: [MainWindowController] = []
+
+    var activeController: MainWindowController? {
+        if let keyWin = NSApp.keyWindow, let ctrl = keyWin.windowController as? MainWindowController {
+            return ctrl
+        }
+        if let mainWin = NSApp.mainWindow, let ctrl = mainWin.windowController as? MainWindowController {
+            return ctrl
+        }
+        return windowControllers.last
+    }
+
     private var settingsController: SettingsWindowController?
-    private var previewItems: [URL] = []
-    /// 侧栏宽度约束与分隔条（拖动调整侧栏宽度）。
-    private var sidebarWidthConstraint: NSLayoutConstraint?
-    private var sidebarSplitterRef: SplitterView?
-    private var sidebarWidthAtDragStart: CGFloat = 0
-    /// 窗格区顶部让出的高度（顶部工具条所在的那一条）
-    private var workspaceTopConstraint: NSLayoutConstraint?
+
+    override init() {
+        super.init()
+        Self.shared = self
+    }
 
     // MARK: 启动
 
@@ -85,10 +35,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.applicationIconImage = iconImage
         }
         NotificationCenter.default.addObserver(self, selector: #selector(handleLanguageDidChange), name: .languageDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleOpenTerminalSettingsRequested), name: .openTerminalSettingsRequested, object: nil)
+        
+        ServerConnectWindowController.shared.onServersChanged = { [weak self] in
+            self?.windowControllers.forEach { $0.sidebar.reload() }
+        }
+        ServerConnectWindowController.shared.onOpenDirectory = { [weak self] url in
+            self?.activeController?.workspace.openInFocusedPane(url)
+        }
+
         buildMenu()
-        buildWindow()
-        reopenMainWindowAction()
-        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        _ = createMainWindow(openURL: nil)
 
         // 启动 3 秒后后台静默检查一次新版本（仅当有新版时温和提示）
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
@@ -101,40 +58,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.reopenMainWindowAction()
         }
 
-        // 全局键盘监听：支持 ⌘Q 立即退出，以及 Windows 习惯的 Ctrl+Z / Ctrl+Shift+Z 文本与文件撤销与重做
-        NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let chars = event.charactersIgnoringModifiers ?? ""
-            if flags == [.command] && (chars.lowercased() == "q" || event.keyCode == 12) {
-                NSApp.terminate(nil)
-                return nil
-            }
-            let isUndoKey = ((flags == [.control] || flags == [.command]) && chars == "z")
-            if isUndoKey {
-                if let responder = NSApp.keyWindow?.firstResponder,
-                   (responder is NSTextView || responder is NSTextField) {
-                    if NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) {
-                        return nil
-                    }
-                }
-                if self?.isSidebarFocused() == true {
-                    if self?.sidebar?.undoTagDeletion() == true {
-                        return nil
-                    }
-                }
-                if flags == [.control] {
-                    self?.workspace?.undoAction()
+        // 全局键盘与鼠标监听：支持 ⌘Q 立即退出、鼠标前进后退侧键、浏览器一致的前进后退快捷键，以及 Windows 习惯的 Ctrl+Z / Ctrl+Shift+Z
+        NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .otherMouseDown, .otherMouseUp]) { [weak self] event in
+            if event.type == .otherMouseDown {
+                if event.buttonNumber == 3 || event.buttonNumber == 4 {
+                    let targetController = (event.window?.windowController as? MainWindowController) ?? self?.activeController
+                    targetController?.handleMouseNavigation(buttonNumber: event.buttonNumber, location: event.locationInWindow)
                     return nil
                 }
-            } else if flags == [.control, .shift] && chars == "z" {
-                if let responder = NSApp.keyWindow?.firstResponder,
-                   (responder is NSTextView || responder is NSTextField) {
-                    if NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) {
+            } else if event.type == .otherMouseUp {
+                if event.buttonNumber == 3 || event.buttonNumber == 4 {
+                    return nil
+                }
+            } else if event.type == .keyDown {
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                let chars = event.charactersIgnoringModifiers ?? ""
+                if flags == [.command] && (chars.lowercased() == "q" || event.keyCode == 12) {
+                    NSApp.terminate(nil)
+                    return nil
+                }
+
+                let isEditingText: Bool = {
+                    if let responder = NSApp.keyWindow?.firstResponder,
+                       (responder is NSTextView || responder is NSTextField) {
+                        return true
+                    }
+                    if InlineRenameField.activeField != nil {
+                        return true
+                    }
+                    return false
+                }()
+
+                let isUndoKey = ((flags == [.control] || flags == [.command]) && chars == "z")
+                if isUndoKey {
+                    if isEditingText {
+                        if NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) {
+                            return nil
+                        }
+                    }
+                    if self?.activeController?.isSidebarFocused() == true {
+                        if self?.activeController?.sidebar.undoTagDeletion() == true {
+                            return nil
+                        }
+                    }
+                    if flags == [.control] {
+                        self?.activeController?.workspace.undoAction()
+                        return nil
+                    }
+                } else if flags == [.control, .shift] && chars == "z" {
+                    if isEditingText {
+                        if NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) {
+                            return nil
+                        }
+                    }
+                    self?.activeController?.workspace.redoAction()
+                    return nil
+                }
+
+                // 前进与后退快捷键（保持与浏览器一致）：
+                // 后退：⌘[、⌘←（Cmd+左箭头）、⌥←（Option/Alt+左箭头）
+                // 前进：⌘]、⌘→（Cmd+右箭头）、⌥→（Option/Alt+右箭头）
+                if !isEditingText {
+                    let isBackShortcut = (flags == [.command] && (chars == "[" || event.keyCode == 123))
+                        || (flags == [.option] && event.keyCode == 123)
+                    if isBackShortcut {
+                        self?.activeController?.goBackAction()
+                        return nil
+                    }
+
+                    let isForwardShortcut = (flags == [.command] && (chars == "]" || event.keyCode == 124))
+                        || (flags == [.option] && event.keyCode == 124)
+                    if isForwardShortcut {
+                        self?.activeController?.goForwardAction()
                         return nil
                     }
                 }
-                self?.workspace?.redoAction()
-                return nil
             }
             return event
         }
@@ -158,11 +156,144 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
-    @objc private func reopenMainWindowAction() {
-        if window == nil {
-            buildWindow()
+    // MARK: - 多窗口创建与管理
+
+    @discardableResult
+    func createMainWindow(openURL: URL? = nil) -> MainWindowController {
+        let frame: NSRect
+        if let activeWin = activeController?.window, activeWin.isVisible {
+            var cascadeFrame = activeWin.frame.offsetBy(dx: 28, dy: -28)
+            let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(cascadeFrame) }) ?? NSScreen.main
+            if let visible = screen?.visibleFrame {
+                if cascadeFrame.minY < visible.minY || cascadeFrame.maxX > visible.maxX {
+                    cascadeFrame.origin.x = visible.minX + 28
+                    cascadeFrame.origin.y = visible.maxY - cascadeFrame.height - 28
+                }
+            }
+            frame = cascadeFrame
+        } else {
+            let screen = NSScreen.main ?? NSScreen.screens.first
+            let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+            let width = min(1320, max(760, visible.width - 80))
+            let height = min(860, max(480, visible.height - 80))
+            let defaultFrame = NSRect(x: visible.minX + (visible.width - width) / 2,
+                                      y: visible.minY + (visible.height - height) / 2,
+                                      width: width,
+                                      height: height)
+            if let saved = AppSettings.windowFrame {
+                let rect = NSRectFromString(saved)
+                if rect.width >= 700, rect.height >= 420,
+                   NSScreen.screens.contains(where: { $0.visibleFrame.intersects(rect) }) {
+                    frame = rect
+                } else {
+                    frame = defaultFrame
+                }
+            } else {
+                frame = defaultFrame
+            }
         }
-        guard let window else { return }
+
+        let controller = MainWindowController(initialURL: openURL, frame: frame)
+        windowControllers.append(controller)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.window?.orderFrontRegardless()
+        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        return controller
+    }
+
+    func removeWindowController(_ controller: MainWindowController) {
+        windowControllers.removeAll { $0 === controller }
+    }
+
+    // MARK: - 程序坞菜单（Dock 右键菜单）
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        let newWindowItem = NSMenuItem(title: "打开新的窗口".localized, action: #selector(openNewWindowAction), keyEquivalent: "")
+        newWindowItem.target = self
+        menu.addItem(newWindowItem)
+        return menu
+    }
+
+    @objc func openNewWindowAction() {
+        createMainWindow(openURL: nil)
+    }
+
+    // MARK: - 外部打开文件/文件夹处理（作为默认文件管理器）
+
+    func application(_ application: NSApplication, openFiles filenames: [String]) {
+        guard let first = filenames.first else { return }
+        let url = URL(fileURLWithPath: first)
+        handleExternalOpen(url: url)
+        application.reply(toOpenOrPrint: .success)
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let first = urls.first else { return }
+        handleExternalOpen(url: first)
+    }
+
+    private func handleExternalOpen(url: URL) {
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+        let targetFolder: URL
+        let selectTarget: URL?
+        if exists {
+            if isDir.boolValue {
+                targetFolder = url
+                selectTarget = nil
+            } else {
+                targetFolder = url.deletingLastPathComponent().standardizedFileURL
+                selectTarget = url.standardizedFileURL
+            }
+        } else {
+            targetFolder = url
+            selectTarget = nil
+        }
+
+        let mode = AppSettings.externalFolderOpenMode
+        if mode == "window" || windowControllers.isEmpty {
+            let ctrl = createMainWindow(openURL: targetFolder)
+            if let selectTarget {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    ctrl.workspace.focusedPane?.select(urls: [selectTarget])
+                }
+            }
+        } else {
+            guard let ctrl = activeController else {
+                let newCtrl = createMainWindow(openURL: targetFolder)
+                if let selectTarget {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        newCtrl.workspace.focusedPane?.select(urls: [selectTarget])
+                    }
+                }
+                return
+            }
+            if ctrl.window?.isMiniaturized == true {
+                ctrl.window?.deminiaturize(nil)
+            }
+            ctrl.window?.makeKeyAndOrderFront(nil)
+            ctrl.window?.orderFrontRegardless()
+            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+
+            ctrl.workspace.openInFocusedPane(targetFolder)
+            ctrl.sidebar.select(url: targetFolder)
+            ctrl.updateNavTitle()
+            if let selectTarget {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    ctrl.workspace.focusedPane?.select(urls: [selectTarget])
+                }
+            }
+        }
+    }
+
+    @objc func reopenMainWindowAction() {
+        if windowControllers.isEmpty {
+            createMainWindow(openURL: nil)
+            return
+        }
+        guard let window = activeController?.window else { return }
         if window.isMiniaturized {
             window.deminiaturize(nil)
         }
@@ -172,361 +303,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        workspace?.saveState()
-        saveWindowFrame()
-    }
-
-    func windowDidResize(_ notification: Notification) { saveWindowFrame() }
-    func windowDidMove(_ notification: Notification) { saveWindowFrame() }
-
-    private func saveWindowFrame() {
-        guard let window else { return }
-        AppSettings.windowFrame = NSStringFromRect(window.frame)
-    }
-
-    /// 恢复上次窗口的位置与大小；窗口必须落在某个屏幕的可见范围内，否则用默认位置。
-    private func restoreWindowFrame(_ window: NSWindow, fallback: NSRect) {
-        guard let saved = AppSettings.windowFrame else {
-            window.setFrame(fallback, display: true)
-            return
+        activeController?.workspace.saveState()
+        if let frame = activeController?.window?.frame {
+            AppSettings.windowFrame = NSStringFromRect(frame)
         }
-        let rect = NSRectFromString(saved)
-        guard rect.width >= 700, rect.height >= 420 else {
-            window.setFrame(fallback, display: true)
-            return
-        }
-        let onScreen = NSScreen.screens.contains { $0.visibleFrame.intersects(rect) }
-        window.setFrame(onScreen ? rect : fallback, display: true)
-    }
-
-    // MARK: 窗口
-
-    private func buildWindow() {
-        guard window == nil else { return }
-        // 不使用 setFrameAutosaveName：它会连窗口所属 Space 一起保存/恢复，
-        // 导致窗口被还原到不可见的桌面。这里每次按当前主屏可见区定位。
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let width = min(1320, max(760, visible.width - 80))
-        let height = min(860, max(480, visible.height - 80))
-        let frame = NSRect(x: visible.minX + (visible.width - width) / 2,
-                           y: visible.minY + (visible.height - height) / 2,
-                           width: width,
-                           height: height)
-
-        window = MainWindow(contentRect: frame,
-                            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                            backing: .buffered,
-                            defer: false)
-        window.appearance = NSApp.appearance
-        window.title = "Maple"
-        // 与原生规范一致的「无标题栏」外观：不显示窗口标题，标题栏透明，
-        // 侧栏与窗格一直画到窗口顶端，交通灯直接落在侧栏上，视觉上连成一体。
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = false
-        window.minSize = NSSize(width: 760, height: 480)
-        window.delegate = self
-        window.isReleasedWhenClosed = false
-        // 关掉窗口状态恢复：一旦系统存下过异常尺寸（例如 0×0），下次启动会被还原成空白窗口
-        window.isRestorable = false
-        restoreWindowFrame(window, fallback: frame)
-
-        let sidebar = SidebarView()
-        let workspace = WorkspaceArea()
-        self.sidebar = sidebar
-        self.workspace = workspace
-
-        sidebar.currentURLProvider = { [weak self] in
-            self?.workspace?.focusedPane?.currentURL
-        }
-
-        sidebar.onSelect = { [weak self] url in
-            self?.workspace?.openInFocusedPane(url)
-        }
-        sidebar.onOpenInOtherPane = { [weak self] url in
-            self?.workspace?.openInOtherPane(url)
-        }
-        sidebar.onSelectTag = { [weak self] tag in
-            self?.workspace?.showTagInFocusedPane(tag)
-            self?.updateNavTitle()
-        }
-        sidebar.onSelectAllTags = { [weak self] in
-            self?.workspace?.showAllTagsInFocusedPane()
-            self?.updateNavTitle()
-        }
-        workspace.onRequestDeleteTag = { [weak self] tag in
-            self?.sidebar?.confirmAndDeleteTag(named: tag)
-        }
-        sidebar.onTagRemoved = { [weak self] tag in
-            self?.workspace?.handleTagRemoved(tag)
-            self?.updateNavTitle()
-        }
-        sidebar.isShowingTag = { [weak self] tag in
-            self?.workspace?.isShowingTag(tag) ?? false
-        }
-        sidebar.getURLsForTagInPanes = { [weak self] tag in
-            self?.workspace?.getURLsForTagInPanes(tag) ?? []
-        }
-        sidebar.onRequestConnectServer = { [weak self] entry in
-            self?.showConnectServerWindow(initialEntry: entry)
-        }
-        sidebar.onOpenSettings = { [weak self] in
-            self?.showSettingsAction()
-        }
-        ServerConnectWindowController.shared.onServersChanged = { [weak self] in
-            self?.sidebar?.reload()
-        }
-        ServerConnectWindowController.shared.onOpenDirectory = { [weak self] url in
-            self?.workspace?.openInFocusedPane(url)
-        }
-        workspace.onQuickLook = { [weak self] pane in
-            self?.toggleQuickLook(for: pane)
-        }
-        workspace.onNavigate = { [weak self] pane in
-            self?.sidebar?.select(url: pane.currentURL)
-            self?.updateNavTitle()
-        }
-        workspace.onFocusChange = { [weak self] pane in
-            if pane.isAllTagsMode {
-                self?.sidebar?.selectAllTagsRow(scrollToVisible: false)
-            } else if let tag = pane.tagName, pane.isTagView {
-                self?.sidebar?.select(tag: tag)
-            } else {
-                self?.sidebar?.select(url: pane.currentURL)
-            }
-            self?.syncToolbarViewMode()
-            self?.updateNavTitle()
-        }
-        workspace.onViewModeChange = { [weak self] _ in
-            self?.syncToolbarViewMode()
-            self?.updateNavTitle()
-        }
-        workspace.onFavoritesChange = { [weak self] in
-            self?.sidebar?.reload()
-        }
-
-        // 显式约束布局（不用 NSSplitView，避免左侧视图按固有宽度挤压工作区）
-        // 容器用不透明垫底，避免窗口材质把桌面透进来（表现为窗口逐渐发白）
-        let container = OpaqueBackgroundView(frame: frame)
-        container.autoresizingMask = [.width, .height]
-        container.color = Theme.paneBackground
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 10.5
-        container.layer?.masksToBounds = true
-        self.container = container
-        sidebar.translatesAutoresizingMaskIntoConstraints = false
-        workspace.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(sidebar)
-        container.addSubview(workspace)
-
-        // 侧栏与工作区之间可左右拖动
-        let widthConstraint = sidebar.widthAnchor.constraint(equalToConstant: AppSettings.sidebarWidth)
-        sidebarWidthConstraint = widthConstraint
-
-        let sidebarSplitter = SplitterView()
-        sidebarSplitter.axis = .vertical
-        sidebarSplitter.translatesAutoresizingMaskIntoConstraints = false
-        sidebarSplitter.onDragBegan = { [weak self] in
-            guard let self, let constraint = self.sidebarWidthConstraint else { return }
-            self.sidebarWidthAtDragStart = constraint.constant
-        }
-        sidebarSplitter.onDrag = { [weak self] delta in
-            guard let self, let constraint = self.sidebarWidthConstraint else { return }
-            constraint.constant = min(max(self.sidebarWidthAtDragStart + delta, 150), 420)
-        }
-        sidebarSplitter.onDragEnd = { [weak self] in
-            guard let constraint = self?.sidebarWidthConstraint else { return }
-            AppSettings.sidebarWidth = constraint.constant
-        }
-        container.addSubview(sidebarSplitter)
-        sidebarSplitterRef = sidebarSplitter
-
-        // 窗格区顶部让出顶部工具条那一条：侧栏与工具条背景一直画到窗口顶端，
-        // 窗格内容从工具条下沿开始，整体看起来是一整块。
-        let topBand = Theme.chromeHeight
-        let workspaceTop = workspace.topAnchor.constraint(equalTo: container.topAnchor,
-                                                          constant: topBand)
-        workspaceTopConstraint = workspaceTop
-        sidebar.topInset = topBand
-
-        NSLayoutConstraint.activate([
-            sidebar.topAnchor.constraint(equalTo: container.topAnchor),
-            sidebar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            sidebar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            widthConstraint,
-
-            workspaceTop,
-            workspace.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            workspace.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 1),
-            workspace.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-
-            sidebarSplitter.centerXAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 0.5),
-            sidebarSplitter.topAnchor.constraint(equalTo: container.topAnchor),
-            sidebarSplitter.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            sidebarSplitter.widthAnchor.constraint(equalToConstant: 6)
-        ])
-
-        // 自绘顶部工具条：横向从侧栏右沿开始，与窗格对齐；背景与窗格同色，无分隔线。
-        buildChrome(in: container, sidebar: sidebar)
-
-        window.contentView = container
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
-        // 兜底：万一窗口被系统还原成异常尺寸，重新按当前屏幕摆正
-        if window.frame.width < 400 || window.frame.height < 300 {
-            window.setFrame(frame, display: true)
-        }
-        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
-
-        // 首屏选中当前目录对应的侧栏条目
-        if let pane = workspace.focusedPane {
-            sidebar.select(url: pane.currentURL)
-        }
-        // 处理"在新窗格中打开"与"在新窗口定位"的跨组件通知
-        NotificationCenter.default.addObserver(self,
-                                               selector: #selector(handleOpenInOtherPane(_:)),
-                                               name: .openInOtherPane,
-                                               object: nil)
-        NotificationCenter.default.addObserver(self,
-                                               selector: #selector(handleLocateInOtherPane(_:)),
-                                               name: .locateInOtherPane,
-                                               object: nil)
-    }
-
-    @objc private func handleOpenInOtherPane(_ note: Notification) {
-        guard let url = note.object as? URL else { return }
-        workspace?.openInOtherPane(url)
-    }
-
-    @objc private func handleLocateInOtherPane(_ note: Notification) {
-        guard let url = note.object as? URL else { return }
-        workspace?.locateInOtherPane(url)
-    }
-
-    // MARK: 顶部工具条
-
-    /// 自绘顶部工具条：没有系统标题栏、没有系统工具栏，
-    /// 工具条从侧栏右沿开始，垂直方向与交通灯同一行，背景和窗格同色，
-    /// 视觉上就是窗格顶部的延伸（QSpace 那种一体感）。
-    private func buildChrome(in container: NSView, sidebar: SidebarView) {
-        let chrome = ChromeBar()
-        chrome.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(chrome)
-        chromeBar = chrome
-
-        // 空白处按住可拖动窗口，双击缩放
-        chrome.onDragArea = { [weak self] event in
-            self?.handleChromeDrag(event)
-        }
-
-        navView = chrome.navView
-        viewModeView = chrome.viewModeView
-        searchButton = chrome.searchButton
-        moreButton = chrome.moreButton
-        layoutButton = chrome.layoutButton
-
-        navView.onBack = { [weak self] in self?.pane()?.goBack() }
-        navView.onForward = { [weak self] in self?.pane()?.goForward() }
-
-        chrome.newFolderButton.target = self
-        chrome.newFolderButton.action = #selector(newFolderAction)
-
-        chrome.searchButton.target = self
-        chrome.searchButton.action = #selector(showSearchPanel(_:))
-
-        chrome.moreButton.target = self
-        chrome.moreButton.action = #selector(showActionMenu(_:))
-
-        chrome.layoutButton.target = self
-        chrome.layoutButton.action = #selector(showLayoutMenu(_:))
-
-        viewModeView.onPick = { [weak self] mode in
-            self?.pane()?.viewMode = mode
-            self?.syncToolbarViewMode()
-        }
-
-        // 侧栏顶部那一条（交通灯所在的空白区）也能拖窗口
-        let dragStrip = ChromeDragStrip()
-        dragStrip.translatesAutoresizingMaskIntoConstraints = false
-        dragStrip.onDragArea = { [weak self] event in
-            self?.handleChromeDrag(event)
-        }
-        container.addSubview(dragStrip)
-
-        NSLayoutConstraint.activate([
-            chrome.topAnchor.constraint(equalTo: container.topAnchor),
-            chrome.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 1),
-            chrome.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            chrome.heightAnchor.constraint(equalToConstant: Theme.chromeHeight),
-
-            dragStrip.topAnchor.constraint(equalTo: container.topAnchor),
-            dragStrip.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            dragStrip.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            dragStrip.heightAnchor.constraint(equalToConstant: Theme.chromeHeight)
-        ])
-
-        syncToolbarViewMode()
-        updateNavTitle()
-        updateLayoutButton()
-    }
-
-    /// 按住工具条空白处拖窗口，双击缩放（替代系统标题栏的默认行为）。
-    private func handleChromeDrag(_ event: NSEvent) {
-        if event.clickCount == 2 {
-            window?.zoom(nil)
-            return
-        }
-        window?.performDrag(with: event)
-    }
-
-    /// 顶部工具栏的显示方式控件始终反映「焦点窗格」的类型。
-    private func syncToolbarViewMode() {
-        guard let viewModeView, let mode = workspace?.focusedPane?.viewMode else { return }
-        viewModeView.setSelected(mode)
-    }
-
-    /// 顶部左侧的标题始终显示焦点窗格当前所在的文件夹。
-    private func updateNavTitle() {
-        guard let navView else { return }
-        guard let pane = workspace?.focusedPane else {
-            navView.setTitle("")
-            return
-        }
-        let folder = pane.displayedFolderName
-        navView.setTitle(folder)
-        navView.setBackEnabled(pane.canGoBack)
-        navView.setForwardEnabled(pane.canGoForward)
-    }
-
-    @objc private func showLayoutMenu(_ sender: NSButton) {
-        // 已经展开：再点一次收起
-        if let layoutPicker {
-            layoutPicker.close()
-            return
-        }
-        let picker = LayoutPickerController(selected: workspace?.mode ?? .single)
-        picker.onPick = { [weak self] mode in
-            guard let self else { return }
-            self.workspace?.setMode(mode)
-            self.updateLayoutButton()
-        }
-        picker.onDismiss = { [weak self] in self?.layoutPicker = nil }
-        layoutPicker = picker
-        picker.show(anchoredTo: sender, in: window)
-    }
-
-    @objc private func layoutPicked(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let mode = LayoutMode(rawValue: raw) else { return }
-        workspace?.setMode(mode)
-        updateLayoutButton()
-    }
-
-    private func updateLayoutButton() {
-        guard let mode = workspace?.mode else { return }
-        layoutButton?.image = mode.icon
-        layoutButton?.toolTip = "布局：\(mode.title)"
     }
 
     // MARK: 菜单
@@ -563,7 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mainMenu.addItem(fileItem)
         let fileMenu = NSMenu(title: "文件".localized)
         fileItem.submenu = fileMenu
-        add(fileMenu, "新建窗口", #selector(reopenMainWindowAction), "n", [.command])
+        add(fileMenu, "新建窗口", #selector(openNewWindowAction), "n", [.command])
         add(fileMenu, "新建文件夹", #selector(newFolderAction), "n", [.command, .shift])
         add(fileMenu, "重命名", #selector(renameAction), "", [])
         add(fileMenu, "制作副本", #selector(duplicateAction), "d", [.command])
@@ -667,7 +447,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func handleLanguageDidChange() {
         buildMenu()
-        updateLayoutButton()
+        windowControllers.forEach {
+            $0.updateLayoutButton()
+            $0.updateNavTitle()
+            $0.sidebar.reload()
+        }
+    }
+
+    @objc private func handleOpenTerminalSettingsRequested() {
+        showSettings(category: "general")
     }
 
     /// ⌥⌘1–4 给最常用的四种布局，其余布局只能从菜单或工具条图标条里选。
@@ -715,7 +503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
-    private func pane() -> PaneView? { workspace?.focusedPane }
+    private func pane() -> PaneView? { activeController?.pane() }
 
     @objc func duplicateAction() { pane()?.contextDuplicate() }
 
@@ -762,18 +550,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return
             }
         }
-        if isSidebarFocused() {
-            if sidebar?.undoTagDeletion() == true {
+        if activeController?.isSidebarFocused() == true {
+            if activeController?.sidebar.undoTagDeletion() == true {
                 return
             }
         }
-        workspace?.undoAction()
-    }
-
-    private func isSidebarFocused() -> Bool {
-        guard let sidebar else { return false }
-        guard let responder = window?.firstResponder as? NSView else { return false }
-        return responder.isDescendant(of: sidebar)
+        activeController?.workspace.undoAction()
     }
 
     @objc private func redoMenuAction() {
@@ -783,8 +565,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return
             }
         }
-        workspace?.redoAction()
+        activeController?.workspace.redoAction()
     }
+
     @objc private func copyPathAction() { pane()?.copyPath() }
     @objc private func terminalAction() { pane()?.openInTerminal() }
     @objc private func revealAction() { pane()?.revealInFinder() }
@@ -794,115 +577,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func goBackAction() { pane()?.goBack() }
     @objc private func goForwardAction() { pane()?.goForward() }
     @objc private func editPathAction() { pane()?.beginEditingPath() }
+
     @objc private func searchGlobalAction() {
-        guard let window else { return }
-        openSearchPanel(in: window, isCurrentFolder: false)
+        activeController?.openSearchPanel(isCurrentFolder: false)
     }
 
     @objc private func searchCurrentLocationAction() {
-        guard let window else { return }
-        openSearchPanel(in: window, isCurrentFolder: true)
+        activeController?.openSearchPanel(isCurrentFolder: true)
     }
 
     @objc private func searchAction() {
         searchGlobalAction()
     }
 
-    @objc private func listModeAction() { pane()?.viewMode = .list }
-    @objc private func iconModeAction() { pane()?.viewMode = .icons }
-    @objc private func columnModeAction() { pane()?.viewMode = .columns }
+    @objc private func listModeAction() {
+        activeController?.listModeAction()
+    }
 
-    @objc private func sortPicked(_ sender: NSMenuItem) {
+    @objc private func iconModeAction() {
+        activeController?.iconModeAction()
+    }
+
+    @objc private func columnModeAction() {
+        activeController?.columnModeAction()
+    }
+
+    @objc private func layoutPicked(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
-              let field = SortField(rawValue: raw) else { return }
-        pane()?.applySort(field)
-    }
-
-    @objc private func orderPicked(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String else { return }
-        pane()?.applyAscending(raw == "asc")
-    }
-
-    @objc private func groupPicked(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let mode = GroupMode(rawValue: raw) else { return }
-        pane()?.applyGroup(mode)
-    }
-
-    @objc private func quickLookAction() {
-        pane()?.requestQuickLook()
-    }
-
-    /// 把选中的项目（没有选中就用当前目录）在另一个窗格里打开。
-    @objc private func openSelectionInOtherPane() {
-        guard let pane = pane() else { return }
-        let url = pane.currentSelection().first?.url ?? pane.currentURL
-        workspace?.openInOtherPane(url)
+              let mode = LayoutMode(rawValue: raw) else { return }
+        activeController?.setLayoutMode(mode)
     }
 
     @objc private func showDisplayOptionsAction() {
-        showDisplayOptions(anchoredTo: moreButton)
+        activeController?.showDisplayOptions()
     }
 
-    /// 统一打开搜索浮层，并设定搜索范围（保留上一次搜索状态，不重置）。
-    private func openSearchPanel(in window: NSWindow, isCurrentFolder: Bool) {
-        if let controller = searchController {
-            if controller.isVisible {
-                controller.setScope(isCurrentFolder: isCurrentFolder)
-                return
-            }
-            controller.setScope(isCurrentFolder: isCurrentFolder)
-            controller.show(anchoredTo: searchButton, in: window)
-            return
-        }
-        let controller = SearchPanelController()
-        controller.currentFolderProvider = { [weak self] in
-            self?.workspace?.focusedPane?.currentURL ?? FileManager.default.homeDirectoryForCurrentUser
-        }
-        controller.onPick = { [weak self] url in
-            guard let self else { return }
-            if let pane = self.workspace?.focusedPane ?? self.workspace?.panes.first {
-                pane.activate()
-                pane.reveal(url)
-            }
-        }
-        controller.onOpenSettings = { [weak self] in
-            self?.showSettingsAction()
-        }
-        searchController = controller
-        controller.setScope(isCurrentFolder: isCurrentFolder)
-        controller.show(anchoredTo: searchButton, in: window)
-    }
-
-    /// 顶部放大镜按钮点击
-    @objc private func showSearchPanel(_ sender: NSButton) {
-        guard let window else { return }
-        if let controller = searchController, controller.isVisible {
-            controller.close()
-            return
-        }
-        openSearchPanel(in: window, isCurrentFolder: false)
-    }
-
-    /// 打开设置与权限管理窗口（支持重置被误拒的系统文件夹权限并立即重新触发授权弹窗）。
     @objc private func showSettingsAction() {
+        showSettings(category: nil)
+    }
+
+    func showSettings(category: String? = nil) {
         if settingsController == nil {
             let ctrl = SettingsWindowController()
             ctrl.onSettingsChanged = { [weak self] in
-                self?.workspace?.reloadAll()
+                self?.windowControllers.forEach { $0.workspace.reloadAll() }
             }
             ctrl.onIconSizeChanged = { [weak self] size in
-                self?.workspace?.applyIconSize(size)
+                self?.windowControllers.forEach { $0.workspace.applyIconSize(size) }
             }
             ctrl.onRowHeightChanged = { [weak self] height in
-                self?.workspace?.applyRowHeight(height)
+                self?.windowControllers.forEach { $0.workspace.applyRowHeight(height) }
             }
             settingsController = ctrl
         }
-        settingsController?.show(relativeTo: window)
+        settingsController?.show(relativeTo: activeController?.window, categoryId: category)
     }
 
-    /// 检查应用更新
     @objc private func checkForUpdatesAction() {
         UpdateChecker.shared.checkForUpdates(isUserInitiated: true)
     }
@@ -911,189 +641,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         showConnectServerWindow(initialEntry: nil)
     }
 
-    private func showConnectServerWindow(initialEntry: ServerEntry?) {
-        ServerConnectWindowController.shared.show(relativeTo: window, initialEntry: initialEntry)
-    }
-
-    private func showDisplayOptions(anchoredTo anchor: NSButton?) {
-        if let popover = displayOptionsPopover, popover.isShown {
-            popover.performClose(nil)
-            return
-        }
-        let controller = DisplayOptionsViewController(iconSize: AppSettings.gridIconSize,
-                                                     rowHeight: AppSettings.listRowHeight,
-                                                     showHidden: AppSettings.showHidden)
-        controller.onIconSize = { [weak self] size in
-            AppSettings.gridIconSize = size
-            self?.workspace?.applyIconSize(size)
-        }
-        controller.onRowHeight = { [weak self] height in
-            AppSettings.listRowHeight = height
-            self?.workspace?.applyRowHeight(height)
-        }
-        controller.onShowHidden = { [weak self] show in
-            AppSettings.showHidden = show
-            self?.workspace?.reloadAll()
-        }
-
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.contentViewController = controller
-        popover.contentSize = NSSize(width: 264, height: 226)
-        if let anchor {
-            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
-        } else if let content = window.contentView {
-            popover.show(relativeTo: content.bounds, of: content, preferredEdge: .minY)
-        }
-        displayOptionsPopover = popover
-    }
-
-    // MARK: 顶部「更多」菜单
-
-    @objc private func showActionMenu(_ sender: NSButton) {
-        guard let pane = workspace?.focusedPane, let window = sender.window else { return }
-        let menu = makeActionMenu(for: pane)
-        // 用屏幕坐标锚定按钮下沿，避免菜单盖住工具栏
-        let onScreen = window.convertToScreen(sender.convert(sender.bounds, to: nil))
-        menu.popUp(positioning: nil,
-                   at: NSPoint(x: onScreen.minX, y: onScreen.minY - 6),
-                   in: nil)
-    }
-
-    /// 与访达顶部省略号菜单一致：常用操作 + 分组 / 排序 / 显示选项。
-    private func makeActionMenu(for pane: PaneView) -> NSMenu {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-
-        let newFolder = NSMenuItem(title: "新建文件夹".localized, action: #selector(newFolderAction), keyEquivalent: "")
-        newFolder.target = self
-        newFolder.isEnabled = !pane.isTagView
-        menu.addItem(newFolder)
-
-        let openOther = NSMenuItem(title: "在新窗格中打开".localized, action: #selector(openSelectionInOtherPane), keyEquivalent: "")
-        openOther.target = self
-        openOther.isEnabled = (workspace?.panes.count ?? 1) > 1
-        menu.addItem(openOther)
-
-        menu.addItem(.separator())
-
-        let info = NSMenuItem(title: "显示简介".localized, action: #selector(infoAction), keyEquivalent: "")
-        info.target = self
-        menu.addItem(info)
-
-        let quickLook = NSMenuItem(title: "快速查看“\(pane.menuTargetName)”",
-                                   action: #selector(quickLookAction),
-                                   keyEquivalent: "")
-        quickLook.target = self
-        // 标签视图没有选中项时，快速查看没有明确对象
-        quickLook.isEnabled = !(pane.isTagView && pane.currentSelection().isEmpty)
-        menu.addItem(quickLook)
-
-        menu.addItem(.separator())
-
-        let groupItem = NSMenuItem(title: "使用群组".localized, action: nil, keyEquivalent: "")
-        let groupMenu = NSMenu()
-        groupMenu.autoenablesItems = false
-        for mode in GroupMode.allCases {
-            let item = NSMenuItem(title: mode.title, action: #selector(groupPicked(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = mode.rawValue
-            item.state = mode == pane.groupMode ? .on : .off
-            groupMenu.addItem(item)
-        }
-        groupItem.submenu = groupMenu
-        menu.addItem(groupItem)
-
-        let sortItem = NSMenuItem(title: "排序方式".localized, action: nil, keyEquivalent: "")
-        let sortMenu = NSMenu()
-        sortMenu.autoenablesItems = false
-        for field in SortField.allCases {
-            let item = NSMenuItem(title: field.title, action: #selector(sortPicked(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = field.rawValue
-            item.state = field == pane.sortField ? .on : .off
-            sortMenu.addItem(item)
-        }
-        sortMenu.addItem(.separator())
-        let asc = NSMenuItem(title: "升序".localized, action: #selector(orderPicked(_:)), keyEquivalent: "")
-        asc.target = self
-        asc.representedObject = "asc"
-        asc.state = pane.ascending ? .on : .off
-        sortMenu.addItem(asc)
-        let desc = NSMenuItem(title: "降序".localized, action: #selector(orderPicked(_:)), keyEquivalent: "")
-        desc.target = self
-        desc.representedObject = "desc"
-        desc.state = pane.ascending ? .off : .on
-        sortMenu.addItem(desc)
-        sortItem.submenu = sortMenu
-        menu.addItem(sortItem)
-
-        let options = NSMenuItem(title: "查看显示选项…".localized, action: #selector(showDisplayOptionsAction), keyEquivalent: "")
-        options.target = self
-        menu.addItem(options)
-
-        let settingsItem = NSMenuItem(title: "设置与权限管理…".localized, action: #selector(showSettingsAction), keyEquivalent: "")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-
-        let connectServerItem = NSMenuItem(title: "连接服务器…".localized, action: #selector(connectServerAction), keyEquivalent: "")
-        connectServerItem.target = self
-        menu.addItem(connectServerItem)
-
-        let updateItem = NSMenuItem(title: "检查更新…".localized, action: #selector(checkForUpdatesAction), keyEquivalent: "")
-        updateItem.target = self
-        menu.addItem(updateItem)
-
-        menu.addItem(.separator())
-
-        let hidden = NSMenuItem(title: AppSettings.showHidden ? "隐藏隐藏文件".localized : "显示隐藏文件".localized,
-                                action: #selector(toggleHiddenAction),
-                                keyEquivalent: "")
-        hidden.target = self
-        menu.addItem(hidden)
-
-        let refresh = NSMenuItem(title: "刷新".localized, action: #selector(refreshAction), keyEquivalent: "")
-        refresh.target = self
-        menu.addItem(refresh)
-
-        menu.addItem(.separator())
-
-        let layoutItem = NSMenuItem(title: "布局".localized, action: nil, keyEquivalent: "")
-        let layoutMenu = NSMenu()
-        layoutMenu.autoenablesItems = false
-        for mode in LayoutMode.allCases {
-            let item = NSMenuItem(title: mode.title, action: #selector(layoutPicked(_:)), keyEquivalent: "")
-            item.target = self
-            item.image = mode.icon
-            item.representedObject = mode.rawValue
-            item.state = mode == workspace?.mode ? .on : .off
-            layoutMenu.addItem(item)
-        }
-        layoutItem.submenu = layoutMenu
-        menu.addItem(layoutItem)
-
-        return menu
+    func showConnectServerWindow(initialEntry: ServerEntry?) {
+        ServerConnectWindowController.shared.show(relativeTo: activeController?.window, initialEntry: initialEntry)
     }
 
     @objc private func toggleHiddenAction() {
         AppSettings.showHidden.toggle()
-        workspace?.reloadAll()
+        windowControllers.forEach { $0.workspace.reloadAll() }
     }
 
     @objc private func toggleSidebarAction() {
-        sidebar.isHidden.toggle()
-        sidebarSplitterRef?.isHidden = sidebar.isHidden
+        activeController?.toggleSidebar()
     }
 
     @objc private func nextPaneAction() {
-        guard let workspace, workspace.panes.count > 1 else { return }
-        let panes = workspace.panes
-        guard let current = workspace.focusedPane,
-              let index = panes.firstIndex(where: { $0 === current }) else {
-            workspace.setFocused(panes.first)
-            return
-        }
-        workspace.setFocused(panes[(index + 1) % panes.count])
+        activeController?.nextPane()
     }
 
     @objc private func goToStandardFolder(_ sender: NSMenuItem) {
@@ -1105,161 +667,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "a": URL(fileURLWithPath: "/Applications")
         ]
         guard let key = sender.representedObject as? String, let url = mapping[key] else { return }
-        workspace?.openInFocusedPane(url)
-    }
-
-    // MARK: Quick Look
-
-    private func toggleQuickLook(for pane: PaneView) {
-        guard let panel = QLPreviewPanel.shared() else { return }
-        if panel.isVisible {
-            panel.orderOut(nil)
-            return
-        }
-        let selection = pane.currentSelection().map { $0.url }
-        // 与访达一致：没有选中项时快速查看当前文件夹
-        let urls = selection.isEmpty ? [pane.currentURL] : selection
-        previewItems = urls
-        panel.dataSource = self
-        panel.delegate = self
-        panel.makeKeyAndOrderFront(nil)
-        panel.reloadData()
-    }
-}
-
-
-// MARK: - 工具栏里的自定义视图
-
-/// 顶部左侧的导航区：后退 / 前进 + 当前文件夹名。
-final class ToolbarNavView: NSView {
-
-    var onBack: (() -> Void)?
-    var onForward: (() -> Void)?
-
-    private let backButton = SquareToolbarButton()
-    private let forwardButton = SquareToolbarButton()
-    private let titleLabel = NSTextField(labelWithString: "")
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-
-        backButton.image = Theme.symbol("chevron.left", size: 15, weight: .semibold)
-        backButton.target = self
-        backButton.action = #selector(backTapped)
-        backButton.toolTip = "后退".localized
-
-        forwardButton.image = Theme.symbol("chevron.right", size: 15, weight: .semibold)
-        forwardButton.target = self
-        forwardButton.action = #selector(forwardTapped)
-        forwardButton.toolTip = "前进".localized
-
-        titleLabel.font = .systemFont(ofSize: 14.5, weight: .semibold)
-        titleLabel.textColor = .labelColor
-        titleLabel.lineBreakMode = .byTruncatingTail
-
-        let stack = NSStackView(views: [backButton, forwardButton, titleLabel])
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 2
-        stack.setCustomSpacing(10, after: forwardButton)
-        addSubview(stack)
-
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stack.heightAnchor.constraint(equalToConstant: 28),
-            titleLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 60),
-            titleLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 150)
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func setTitle(_ title: String) {
-        titleLabel.stringValue = title
-    }
-
-    func setBackEnabled(_ enabled: Bool) {
-        backButton.alphaValue = enabled ? 1 : 0.35
-    }
-
-    func setForwardEnabled(_ enabled: Bool) {
-        forwardButton.alphaValue = enabled ? 1 : 0.35
-    }
-
-    @objc private func backTapped() { onBack?() }
-
-    @objc private func forwardTapped() { onForward?() }
-}
-
-/// 工具栏里的显示方式切换：列表 / 图标 / 分栏（三个方形按钮）。
-final class ToolbarViewModeView: NSView {
-
-    var onPick: ((ViewMode) -> Void)?
-
-    private let buttons: [(mode: ViewMode, button: SquareToolbarButton)] = [
-        (.list, ToolbarViewModeView.makeButton("list.bullet", "列表".localized)),
-        (.icons, ToolbarViewModeView.makeButton("square.grid.2x2", "图标".localized)),
-        (.columns, ToolbarViewModeView.makeButton("rectangle.split.3x1", "分栏".localized))
-    ]
-
-    private static func makeButton(_ symbol: String, _ tooltip: String) -> SquareToolbarButton {
-        let button = SquareToolbarButton()
-        button.image = Theme.symbol(symbol, size: 15, weight: .regular)
-        button.toolTip = tooltip
-        return button
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        let stack = NSStackView(views: buttons.map { $0.button })
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 2
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stack.heightAnchor.constraint(equalToConstant: 28)
-        ])
-        for entry in buttons {
-            entry.button.target = self
-            entry.button.action = #selector(picked(_:))
-            entry.button.tag = ViewMode.allCases.firstIndex(of: entry.mode) ?? 0
-        }
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func setSelected(_ mode: ViewMode) {
-        for entry in buttons {
-            entry.button.isOn = (entry.mode == mode)
-        }
-    }
-
-    @objc private func picked(_ sender: NSButton) {
-        let index = sender.tag
-        guard ViewMode.allCases.indices.contains(index) else { return }
-        onPick?(ViewMode.allCases[index])
-    }
-}
-
-// MARK: - Quick Look 数据源
-
-extension AppDelegate: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
-
-    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        previewItems.count
-    }
-
-    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        guard index < previewItems.count else { return nil }
-        return previewItems[index] as NSURL
+        activeController?.workspace.openInFocusedPane(url)
     }
 }
 

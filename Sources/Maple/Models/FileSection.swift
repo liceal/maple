@@ -10,14 +10,14 @@ enum ListColumn: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .path: return "位置"
-        case .created: return "创建日期"
-        case .modified: return "修改日期"
-        case .size: return "大小"
-        case .kind: return "种类"
-        case .owner: return "所有者"
-        case .group: return "群组"
-        case .duration: return "持续时间"
+        case .path: return "位置".localized
+        case .created: return "创建日期".localized
+        case .modified: return "修改日期".localized
+        case .size: return "大小".localized
+        case .kind: return "种类".localized
+        case .owner: return "所有者".localized
+        case .group: return "群组".localized
+        case .duration: return "持续时间".localized
         }
     }
 
@@ -111,11 +111,11 @@ enum SortField: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .name: return "名称"
-        case .kind: return "种类"
-        case .size: return "大小"
-        case .modified: return "修改日期"
-        case .created: return "创建日期"
+        case .name: return "名称".localized
+        case .kind: return "种类".localized
+        case .size: return "大小".localized
+        case .modified: return "修改日期".localized
+        case .created: return "创建日期".localized
         }
     }
 }
@@ -125,12 +125,12 @@ enum GroupMode: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .none: return "不分组"
-        case .kind: return "种类"
-        case .size: return "大小"
-        case .modified: return "修改日期"
-        case .created: return "创建日期"
-        case .nameInitial: return "名称首字母"
+        case .none: return "不分组".localized
+        case .kind: return "种类".localized
+        case .size: return "大小".localized
+        case .modified: return "修改日期".localized
+        case .created: return "创建日期".localized
+        case .nameInitial: return "名称首字母".localized
         }
     }
 }

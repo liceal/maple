@@ -11,6 +11,7 @@ final class ChromeBar: NSView {
     let navView = ToolbarNavView()
     let viewModeView = ToolbarViewModeView()
     let newFolderButton = SquareToolbarButton()
+    let terminalButton = SquareToolbarButton()
     let searchButton = SquareToolbarButton()
     let moreButton = SquareToolbarButton()
     let layoutButton = SquareToolbarButton()
@@ -29,6 +30,10 @@ final class ChromeBar: NSView {
         newFolderButton.image = Theme.symbol("folder.badge.plus", size: 15)
         newFolderButton.toolTip = "新建文件夹".localized
 
+        terminalButton.image = Theme.symbol("terminal", size: 15)
+        updateTerminalToolTip()
+        NotificationCenter.default.addObserver(self, selector: #selector(terminalSettingsChanged), name: .terminalSettingsDidChange, object: nil)
+
         searchButton.image = Theme.symbol("magnifyingglass", size: 15)
         searchButton.toolTip = "搜索文件（全局搜索 ⇧⌘F，当前位置 ⌘F）".localized
 
@@ -41,7 +46,7 @@ final class ChromeBar: NSView {
         navView.translatesAutoresizingMaskIntoConstraints = false
         layoutButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let group = NSStackView(views: [newFolderButton, viewModeView, searchButton, moreButton])
+        let group = NSStackView(views: [newFolderButton, terminalButton, viewModeView, searchButton, moreButton])
         group.translatesAutoresizingMaskIntoConstraints = false
         group.orientation = .horizontal
         group.alignment = .centerY
@@ -79,6 +84,19 @@ final class ChromeBar: NSView {
 
     override func mouseDown(with event: NSEvent) {
         onDragArea?(event)
+    }
+
+    @objc private func terminalSettingsChanged() {
+        updateTerminalToolTip()
+    }
+
+    func updateTerminalToolTip() {
+        let termName = TerminalManager.shared.currentTerminal().displayName
+        terminalButton.toolTip = String(format: "在“%@”中打开当前目录 (⌥⌘T)".localized, termName)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 }
 

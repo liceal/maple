@@ -10,7 +10,7 @@ export LC_ALL=en_US.UTF-8
 GIT_LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git tag -l "v*" --sort=-v:refname 2>/dev/null | head -n 1 || true)
 DETECTED_VERSION=$(echo "$GIT_LATEST_TAG" | sed -E 's/^v//')
 
-VERSION="${1:-${MAPLE_VERSION:-${DETECTED_VERSION:-1.1.2}}}"
+VERSION="${1:-${MAPLE_VERSION:-${DETECTED_VERSION:-1.1.3}}}"
 echo "→ 准备构建 Maple v${VERSION} (来源: ${1:+入参}${MAPLE_VERSION:+环境变量}${DETECTED_VERSION:+Git Tag: $GIT_LATEST_TAG}) ..."
 
 # 仅检测可用于对外分发的 Developer ID Application 证书（切勿使用本机调试专用的 Apple Development 证书签名分发包或 DMG，否则会导致 DMG 本身在其他电脑上被拦截）
@@ -128,6 +128,22 @@ package_maple_app() {
     <key>NSNetworkVolumesUsageDescription</key><string>Maple 需要访问网络卷以浏览文件。</string>
     <key>NSAppleEventsUsageDescription</key><string>Maple 需要控制“访达”以读取系统废纸篓内容和执行清倒废纸篓操作。</string>
     <key>NSSystemAdministrationUsageDescription</key><string>Maple 需要完全磁盘访问权限以浏览受保护的系统目录与废纸篓。</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Folder</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.folder</string>
+                <string>public.directory</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

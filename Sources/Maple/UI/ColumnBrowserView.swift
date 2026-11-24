@@ -1413,12 +1413,10 @@ private final class ColumnRowCell: NSTableCellView {
         title.isHidden = true
         tagDotsView.isHidden = true
         addSubview(field)
-        needsLayout = true
-        layoutSubtreeIfNeeded()
+        updateRenameFieldFrame()
 
         field.onTextChange = { [weak self] _ in
-            self?.needsLayout = true
-            self?.layoutSubtreeIfNeeded()
+            self?.updateRenameFieldFrame()
         }
         field.onEndEditing = { [weak self] rawText, commit in
             guard let self else { return }
@@ -1477,6 +1475,31 @@ private final class ColumnRowCell: NSTableCellView {
         }
     }
 
+    private func updateRenameFieldFrame() {
+        guard let field = renameField else { return }
+        let height = bounds.height
+        let visibleW: CGFloat
+        if let clip = (superview as? NSTableRowView)?.superview?.enclosingScrollView?.contentView, clip.bounds.width > 0 {
+            visibleW = clip.bounds.width
+        } else {
+            visibleW = bounds.width
+        }
+        let cellW = min(bounds.width, visibleW)
+        let rightMargin: CGFloat = 14
+        let textHeight: CGFloat = 21
+        let nameX = icon.frame.maxX + 4
+        let maxRight = chevron.isHidden ? (cellW - rightMargin) : (chevron.frame.minX - 4)
+        let maxAvailableW = max(50, maxRight - nameX)
+        let font = field.font ?? .systemFont(ofSize: 12.5)
+        let currentStr = (field.currentEditor() as? NSTextView)?.string ?? field.stringValue
+        let textW = (currentStr as NSString).size(withAttributes: [.font: font]).width
+        let fieldWidth = min(maxAvailableW, max(56, ceil(textW) + 20))
+        let targetFrame = NSRect(x: nameX, y: round((height - textHeight) / 2), width: fieldWidth, height: textHeight)
+        if field.frame != targetFrame {
+            field.frame = targetFrame
+        }
+    }
+
     override func layout() {
         super.layout()
         let height = bounds.height
@@ -1505,16 +1528,8 @@ private final class ColumnRowCell: NSTableCellView {
         // 从而保证普通文件右侧预留出箭头空间，在垂直视觉上与文件夹标签完全对齐
         let tagRightAnchor = cellW - rightMargin - chevronWidth - chevronGap
 
-        if let field = renameField {
-            let textHeight: CGFloat = 21
-            let nameX = icon.frame.maxX + 4
-            let maxRight = chevron.isHidden ? (cellW - rightMargin) : (chevron.frame.minX - 4)
-            let maxAvailableW = max(50, maxRight - nameX)
-            let font = field.font ?? .systemFont(ofSize: 12.5)
-            let currentStr = (field.currentEditor() as? NSTextView)?.string ?? field.stringValue
-            let textW = (currentStr as NSString).size(withAttributes: [.font: font]).width
-            let fieldWidth = min(maxAvailableW, max(56, ceil(textW) + 20))
-            field.frame = NSRect(x: nameX, y: round((height - textHeight) / 2), width: fieldWidth, height: textHeight)
+        if renameField != nil {
+            updateRenameFieldFrame()
             tagDotsView.isHidden = true
         } else {
             let textHeight: CGFloat = 17

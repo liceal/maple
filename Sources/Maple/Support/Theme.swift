@@ -503,6 +503,17 @@ final class SquareToolbarButton: NSButton {
         }
     }
 
+    /// 右键点击回调
+    var onRightMouseDown: ((NSEvent) -> Void)?
+
+    override func rightMouseDown(with event: NSEvent) {
+        if let onRightMouseDown {
+            onRightMouseDown(event)
+        } else {
+            super.rightMouseDown(with: event)
+        }
+    }
+
     private var trackingArea: NSTrackingArea?
     private var isHovered = false {
         didSet {

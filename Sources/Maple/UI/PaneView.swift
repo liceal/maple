@@ -229,7 +229,7 @@ final class PaneView: NSView, NSMenuDelegate {
         btn.showsBackgroundWhenOn = false
         return btn
     }()
-    private let emptyLabel = NSTextField(labelWithString: "文件夹为空")
+    private let emptyLabel = NSTextField(labelWithString: "文件夹为空".localized)
     private let listView = FileListView()
     private let iconView = FileIconView()
     private let columnView = ColumnBrowserView()
@@ -292,8 +292,8 @@ final class PaneView: NSView, NSMenuDelegate {
         headerTint.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(headerTint)
 
-        configure(backButton, symbol: "chevron.left", tooltip: "后退", action: #selector(goBack))
-        configure(forwardButton, symbol: "chevron.right", tooltip: "前进", action: #selector(goForward))
+        configure(backButton, symbol: "chevron.left", tooltip: "后退".localized, action: #selector(goBack))
+        configure(forwardButton, symbol: "chevron.right", tooltip: "前进".localized, action: #selector(goForward))
 
         paneMenuButton.translatesAutoresizingMaskIntoConstraints = false
         paneMenuButton.bezelStyle = .inline
@@ -885,7 +885,7 @@ final class PaneView: NSView, NSMenuDelegate {
         } else {
             tagName = nil
             items = []
-            emptyLabel.stringValue = "暂无标签"
+            emptyLabel.stringValue = "暂无标签".localized
             emptyLabel.isHidden = false
             applyOrganization()
             refreshPathBar()
@@ -900,7 +900,7 @@ final class PaneView: NSView, NSMenuDelegate {
         isCleared = false
         tagName = name
         items = []
-        emptyLabel.stringValue = "正在查找带有「\(name)」标签的项目…"
+        emptyLabel.stringValue = String(format: "正在查找带有「%@」标签的项目…".localized, name)
         emptyLabel.isHidden = false
         applyOrganization()
         refreshPathBar()
@@ -921,7 +921,7 @@ final class PaneView: NSView, NSMenuDelegate {
         if viewMode == .columns { viewMode = .list }
         activate()
         items = []
-        emptyLabel.stringValue = "正在查找带有「\(name)」标签的项目…"
+        emptyLabel.stringValue = String(format: "正在查找带有「%@」标签的项目…".localized, name)
         emptyLabel.isHidden = false
         applyOrganization()
         refreshPathBar()
@@ -934,7 +934,7 @@ final class PaneView: NSView, NSMenuDelegate {
         tagSearch.search(tag: name) { [weak self] urls in
             guard let self, self.tagName == name else { return }
             self.items = urls.compactMap { FileItem(url: $0) }
-            self.emptyLabel.stringValue = "没有带「\(name)」标签的项目"
+            self.emptyLabel.stringValue = String(format: "没有带「%@」标签的项目".localized, name)
             self.emptyLabel.isHidden = !self.items.isEmpty
             self.applyOrganization()
             self.updateStatus()
@@ -1104,17 +1104,17 @@ final class PaneView: NSView, NSMenuDelegate {
                 }
             }
             if hasKnownSize {
-                statusLeft.stringValue = "\(count) 个项目，已选 \(selected) 个（\(Format.bytes(totalBytes))）"
+                statusLeft.stringValue = String(format: "%1$d 个项目，已选 %2$d 个（%3$@）".localized, count, selected, Format.bytes(totalBytes))
             } else {
-                statusLeft.stringValue = "\(count) 个项目，已选 \(selected) 个"
+                statusLeft.stringValue = String(format: "%1$d 个项目，已选 %2$d 个".localized, count, selected)
             }
         } else {
-            statusLeft.stringValue = "\(count) 个项目"
+            statusLeft.stringValue = String(format: "%d 个项目".localized, count)
         }
 
         if let values = try? currentURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
            let capacity = values.volumeAvailableCapacityForImportantUsage, capacity > 0 {
-            statusRight.stringValue = "可用 \(Format.bytes(capacity))"
+            statusRight.stringValue = String(format: "可用 %@".localized, Format.bytes(capacity))
         } else {
             statusRight.stringValue = ""
         }
@@ -1622,7 +1622,8 @@ final class PaneView: NSView, NSMenuDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        add(menu, "在终端打开", #selector(openInTerminal))
+        let currentTerm = TerminalManager.shared.currentTerminal()
+        add(menu, String(format: "在“%@”中打开".localized, currentTerm.displayName), #selector(openCurrentDirectoryInTerminal))
         add(menu, "显示简介", #selector(showPaneInfo))
         let otherPane = add(menu, "在其他窗格中显示", #selector(openPaneInOtherPane))
         otherPane.isEnabled = delegate?.paneCanOpenInOtherPane(self) ?? false
@@ -1641,7 +1642,7 @@ final class PaneView: NSView, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let viewItem = NSMenuItem(title: "显示方式", action: nil, keyEquivalent: "")
+        let viewItem = NSMenuItem(title: "显示方式".localized, action: nil, keyEquivalent: "")
         let viewMenu = NSMenu()
         viewMenu.autoenablesItems = false
         for mode in ViewMode.allCases {
@@ -1653,7 +1654,7 @@ final class PaneView: NSView, NSMenuDelegate {
         viewItem.submenu = viewMenu
         menu.addItem(viewItem)
 
-        let groupItem = NSMenuItem(title: "分组", action: nil, keyEquivalent: "")
+        let groupItem = NSMenuItem(title: "分组".localized, action: nil, keyEquivalent: "")
         let groupMenu = NSMenu()
         groupMenu.autoenablesItems = false
         for mode in GroupMode.allCases {
@@ -1746,7 +1747,7 @@ final class PaneView: NSView, NSMenuDelegate {
                 self.renameSelected()
             }
         } catch {
-            presentError(error, title: "无法新建文件夹")
+            presentError(error, title: "无法新建文件夹".localized)
         }
     }
 
@@ -1766,7 +1767,7 @@ final class PaneView: NSView, NSMenuDelegate {
                 self.renameSelected()
             }
         } catch {
-            presentError(error, title: "无法新建文件")
+            presentError(error, title: "无法新建文件".localized)
         }
     }
 
@@ -1818,7 +1819,7 @@ final class PaneView: NSView, NSMenuDelegate {
                     self.redoStack.removeAll()
                 }
                 if let firstError, trashedMapping.isEmpty {
-                    self.presentError(firstError, title: "无法移到废纸篓")
+                    self.presentError(firstError, title: "无法移到废纸篓".localized)
                 } else {
                     self.contextTargetItems.removeAll()
                     if self.viewMode != .columns {
@@ -2018,7 +2019,7 @@ final class PaneView: NSView, NSMenuDelegate {
                 }
                 createdURLs.append(destination)
             } catch {
-                presentError(error, title: "粘贴失败")
+                presentError(error, title: "粘贴失败".localized)
                 return
             }
         }
@@ -2171,13 +2172,35 @@ final class PaneView: NSView, NSMenuDelegate {
     @objc func openInTerminal() {
         let targetURL: URL
         if let target = effectiveContextItems.first {
-            targetURL = target.isDirectory ? target.url : target.url.deletingLastPathComponent()
+            targetURL = target.isDirectory ? target.url : activeDirectoryURL
         } else {
             targetURL = activeDirectoryURL
         }
-        let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
-        let configuration = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.open([targetURL], withApplicationAt: terminal, configuration: configuration)
+        TerminalManager.shared.open(directoryURL: targetURL)
+    }
+
+    /// 无论当前选中了什么文件，必定在当前目录打开终端
+    @objc func openCurrentDirectoryInTerminal() {
+        TerminalManager.shared.open(directoryURL: activeDirectoryURL)
+    }
+
+    func launchInTerminal(_ terminal: InstalledTerminal) {
+        let targetURL: URL
+        if let target = effectiveContextItems.first {
+            targetURL = target.isDirectory ? target.url : activeDirectoryURL
+        } else {
+            targetURL = activeDirectoryURL
+        }
+        TerminalManager.shared.open(directoryURL: targetURL, using: terminal)
+    }
+
+    @objc func openInSpecificTerminalClicked(_ sender: NSMenuItem) {
+        guard let term = sender.representedObject as? InstalledTerminal else { return }
+        launchInTerminal(term)
+    }
+
+    @objc func openTerminalPreferencesClicked() {
+        NotificationCenter.default.post(name: .openTerminalSettingsRequested, object: nil)
     }
 
     @objc func showInfo() {
@@ -2203,8 +2226,10 @@ final class PaneView: NSView, NSMenuDelegate {
 
         var lines: [String] = []
         let displayName = FileManager.default.displayName(atPath: url.path)
-        lines.append("名称：\(displayName.isEmpty ? url.lastPathComponent : displayName)")
-        lines.append("种类：\(values?.localizedTypeDescription ?? (isDirectory ? "文件夹" : "文件"))")
+        let nameStr = displayName.isEmpty ? url.lastPathComponent : displayName
+        lines.append(String(format: "名称：%@".localized, nameStr))
+        let kindStr = values?.localizedTypeDescription ?? (isDirectory ? "文件夹".localized : "文件".localized)
+        lines.append(String(format: "种类：%@".localized, kindStr))
         let isPackage = values?.isPackage ?? false
         var sizeVal: Int64?
         if !isDirectory {
@@ -2216,17 +2241,17 @@ final class PaneView: NSView, NSMenuDelegate {
             BundleSizeCache.shared.set(size: sizeVal ?? 0, for: url)
         }
         if let sizeVal {
-            lines.append("大小：\(Format.bytes(sizeVal))")
+            lines.append(String(format: "大小：%@".localized, Format.bytes(sizeVal)))
         }
         if urls.count > 1 {
-            lines.append("已选 \(urls.count) 个项目，以上为第一个项目的信息")
+            lines.append(String(format: "已选 %d 个项目，以上为第一个项目的信息".localized, urls.count))
         }
-        lines.append("位置：\(url.deletingLastPathComponent().path)")
-        if let created = values?.creationDate { lines.append("创建：\(Format.date(created))") }
-        if let modified = values?.contentModificationDate { lines.append("修改：\(Format.date(modified))") }
+        lines.append(String(format: "位置：%@".localized, url.deletingLastPathComponent().path))
+        if let created = values?.creationDate { lines.append(String(format: "创建：%@".localized, Format.date(created))) }
+        if let modified = values?.contentModificationDate { lines.append(String(format: "修改：%@".localized, Format.date(modified))) }
         if values?.isSymbolicLink == true {
             let target = (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) ?? "?"
-            lines.append("链接目标：\(target)")
+            lines.append(String(format: "链接目标：%@".localized, target))
         }
         if !isDirectory, let appURL = NSWorkspace.shared.urlForApplication(toOpen: url) {
             let appName = FileManager.default.displayName(atPath: appURL.path)
@@ -2321,7 +2346,9 @@ final class PaneView: NSView, NSMenuDelegate {
             menu.addItem(.separator())
 
             // 2. 快速查看 & 显示简介
-            let qlTitle = targetItems.count == 1 ? "快速查看“\(targetItems[0].name)”" : "快速查看 \(targetItems.count) 项"
+            let qlTitle = targetItems.count == 1
+                ? String(format: "快速查看“%@”".localized, targetItems[0].name)
+                : String(format: "快速查看 %d 项".localized, targetItems.count)
             let qlItem = add(menu, qlTitle, #selector(contextQuickLook))
             qlItem.keyEquivalent = " "
 
@@ -2332,11 +2359,17 @@ final class PaneView: NSView, NSMenuDelegate {
             menu.addItem(.separator())
 
             // 3. 剪切、拷贝、拷贝路径、复制
-            let cutItem = add(menu, targetItems.count == 1 ? "剪切“\(targetItems[0].name)”" : "剪切 \(targetItems.count) 项", #selector(cutSelection))
+            let cutTitle = targetItems.count == 1
+                ? String(format: "剪切“%@”".localized, targetItems[0].name)
+                : String(format: "剪切 %d 项".localized, targetItems.count)
+            let cutItem = add(menu, cutTitle, #selector(cutSelection))
             cutItem.keyEquivalent = "x"
             cutItem.keyEquivalentModifierMask = [.command]
 
-            let copyItem = add(menu, targetItems.count == 1 ? "拷贝“\(targetItems[0].name)”" : "拷贝 \(targetItems.count) 项", #selector(copySelection))
+            let copyTitle = targetItems.count == 1
+                ? String(format: "拷贝“%@”".localized, targetItems[0].name)
+                : String(format: "拷贝 %d 项".localized, targetItems.count)
+            let copyItem = add(menu, copyTitle, #selector(copySelection))
             copyItem.keyEquivalent = "c"
             copyItem.keyEquivalentModifierMask = [.command]
 
@@ -2362,10 +2395,10 @@ final class PaneView: NSView, NSMenuDelegate {
             if !inTrash {
                 let allArchives = targetItems.allSatisfy { FileOperations.isArchive(url: $0.url) }
                 if allArchives {
-                    let title = targetItems.count == 1 ? "解压缩“\(targetItems[0].name)”" : "解压缩 \(targetItems.count) 个归档"
+                    let title = targetItems.count == 1 ? String(format: "解压缩“%@”".localized, targetItems[0].name) : String(format: "解压缩 %d 个归档".localized, targetItems.count)
                     add(menu, title, #selector(contextDecompress))
                 } else {
-                    let title = targetItems.count == 1 ? "压缩“\(targetItems[0].name)”" : "压缩 \(targetItems.count) 个项目"
+                    let title = targetItems.count == 1 ? String(format: "压缩“%@”".localized, targetItems[0].name) : String(format: "压缩 %d 个项目".localized, targetItems.count)
                     add(menu, title, #selector(contextCompress))
                 }
 
@@ -2385,7 +2418,8 @@ final class PaneView: NSView, NSMenuDelegate {
 
             // 7. 移到废纸篓 & 直接删除…（废纸篓内已在顶部提供直接删除与清倒废纸篓）
             if !inTrash {
-                let trashItem = add(menu, targetItems.count == 1 ? "移到废纸篓" : "将 \(targetItems.count) 项移到废纸篓", #selector(trashSelected))
+                let trashTitle = targetItems.count == 1 ? "移到废纸篓".localized : String(format: "将 %d 项移到废纸篓".localized, targetItems.count)
+                let trashItem = add(menu, trashTitle, #selector(trashSelected))
                 trashItem.keyEquivalent = "\u{08}"
                 trashItem.keyEquivalentModifierMask = [.command]
 
@@ -2397,7 +2431,9 @@ final class PaneView: NSView, NSMenuDelegate {
             }
 
             // 8. 终端 & 访达
-            add(menu, "在终端中打开", #selector(openInTerminal))
+            let currentTerm = TerminalManager.shared.currentTerminal()
+            add(menu, String(format: "在“%@”中打开".localized, currentTerm.displayName), #selector(openInTerminal))
+            appendOtherTerminalsMenu(to: menu, currentTerm: currentTerm)
             add(menu, "在 Finder 中显示", #selector(revealInFinder))
         } else {
             // 空白处右键
@@ -2412,13 +2448,37 @@ final class PaneView: NSView, NSMenuDelegate {
                 pasteItem.isEnabled = hasPasteableFiles
                 menu.addItem(.separator())
             }
-            add(menu, "在终端中打开", #selector(openInTerminal))
+            let currentTerm = TerminalManager.shared.currentTerminal()
+            add(menu, String(format: "在“%@”中打开".localized, currentTerm.displayName), #selector(openCurrentDirectoryInTerminal))
+            appendOtherTerminalsMenu(to: menu, currentTerm: currentTerm)
             add(menu, "在 Finder 中显示", #selector(revealInFinder))
             menu.addItem(.separator())
             add(menu, "刷新", #selector(refresh))
         }
 
         return menu
+    }
+
+    private func appendOtherTerminalsMenu(to menu: NSMenu, currentTerm: InstalledTerminal) {
+        let otherTerms = TerminalManager.shared.scanInstalledTerminals().filter { $0.id != currentTerm.id }
+        guard !otherTerms.isEmpty else { return }
+        let otherMenu = NSMenu()
+        otherMenu.autoenablesItems = false
+        for term in otherTerms {
+            let item = NSMenuItem(title: term.displayName, action: #selector(openInSpecificTerminalClicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = term
+            item.image = term.icon
+            otherMenu.addItem(item)
+        }
+        otherMenu.addItem(.separator())
+        let prefItem = NSMenuItem(title: "设置默认终端…".localized, action: #selector(openTerminalPreferencesClicked), keyEquivalent: "")
+        prefItem.target = self
+        otherMenu.addItem(prefItem)
+
+        let otherItem = NSMenuItem(title: "其他终端".localized, action: nil, keyEquivalent: "")
+        otherItem.submenu = otherMenu
+        menu.addItem(otherItem)
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -2449,7 +2509,7 @@ final class PaneView: NSView, NSMenuDelegate {
         for appURL in appURLs.prefix(10) {
             let appName = FileManager.default.displayName(atPath: appURL.path)
             let isDefault = (appURL.standardizedFileURL.path == defaultApp?.standardizedFileURL.path)
-            let title = isDefault ? "\(appName) (默认)" : appName
+            let title = isDefault ? "\(appName)" + " (默认)".localized : appName
             let m = NSMenuItem(title: title, action: #selector(openWithAppMenuItemClicked(_:)), keyEquivalent: "")
             m.target = self
             m.representedObject = (appURL: appURL, fileURL: item.url)
@@ -2486,8 +2546,8 @@ final class PaneView: NSView, NSMenuDelegate {
         } else {
             panel.allowedFileTypes = ["app"]
         }
-        panel.message = "选取用于打开“\(fileURL.lastPathComponent)”的应用程序"
-        panel.prompt = "打开"
+        panel.message = String(format: "选取用于打开“%@”的应用程序".localized, fileURL.lastPathComponent)
+        panel.prompt = "打开".localized
         if let window {
             panel.beginSheetModal(for: window) { resp in
                 if resp == .OK, let appURL = panel.url {
