@@ -174,32 +174,25 @@
                 </a>
             </div>
 
-            <!-- 星露谷公告栏木牌终端框（一键脚本 + Homebrew）与右侧小问号帮助按钮 -->
-            <div class="w-full max-w-lg flex flex-col items-center gap-2">
-                <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#fef8ed] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] text-xs font-mono text-[#431f0a] max-w-full overflow-hidden">
-                    <span class="text-[#c2410c] font-black shrink-0">$</span>
-                    <span id="curl-cmd" class="truncate">curl -fsSL https://liceal.github.io/maple/install.sh | bash</span>
-                    <button onclick="copyCmd('curl-cmd', 'copy-curl-text')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#dfc199] border border-[#733c19] text-[11px] font-sans font-bold text-[#431f0a] shadow-[0_1px_0_#54270f] transition-all">
-                        <span id="copy-curl-text" data-i18n="copy_btn">复制</span>
-                    </button>
-                </div>
-
-                <div class="inline-flex flex-wrap items-center justify-center gap-2 max-w-full">
-                    <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#fef8ed] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] text-xs font-mono text-[#431f0a] max-w-full overflow-hidden">
-                        <span class="text-[#c2410c] font-black shrink-0">$</span>
-                        <span id="brew-cmd" class="truncate">brew install liceal/tap/maple</span>
-                        <button onclick="copyCmd('brew-cmd', 'copy-text')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#dfc199] border border-[#733c19] text-[11px] font-sans font-bold text-[#431f0a] shadow-[0_1px_0_#54270f] transition-all">
-                            <span id="copy-text" data-i18n="copy_btn">复制</span>
-                        </button>
+            <!-- 星露谷公告栏木牌终端框（支持 curl / brew 切换）与右侧小问号帮助按钮 -->
+            <div class="w-full max-w-lg flex flex-wrap sm:flex-nowrap items-center justify-center gap-2">
+                <div class="flex-1 min-w-0 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#fef8ed] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] text-xs font-mono text-[#431f0a] overflow-hidden">
+                    <div class="inline-flex items-center p-0.5 rounded bg-[#e8cfa9] border border-[#733c19]/40 shrink-0 font-sans text-[10.5px] font-bold">
+                        <button type="button" id="tab-curl" onclick="switchInstallTab('curl')" class="px-1.5 py-0.5 rounded bg-[#733c19] text-[#fef8ed] shadow-sm transition-all cursor-pointer">curl</button>
+                        <button type="button" id="tab-brew" onclick="switchInstallTab('brew')" class="px-1.5 py-0.5 rounded text-[#683315] hover:text-[#431f0a] transition-all cursor-pointer">brew</button>
                     </div>
-
-                    <!-- 问号帮助按钮（点击弹出修复流程与工具弹窗） -->
-                    <button onclick="openHelpModal()" data-i18n-title="help_btn_tip" title="首次打开提示身份不明或已损坏？点击查看解决流程与工具"
-                            class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#fef8ed] hover:bg-[#fff9f0] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] active:translate-y-[2px] active:shadow-[0_1px_0_#4d240c] transition text-xs font-bold text-[#54270f] cursor-pointer select-none">
-                        <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-[#c2531a] text-[#fff9f0] text-[11px] font-black leading-none">?</span>
-                        <span data-i18n="help_btn_label" class="text-[11px]">首次打不开</span>
+                    <span id="install-cmd" class="flex-1 min-w-0 truncate text-left">curl -fsSL https://liceal.github.io/maple/install.sh | bash</span>
+                    <button onclick="copyCmd('install-cmd', 'copy-text')" class="shrink-0 px-2 py-0.5 rounded bg-[#ecd2af] hover:bg-[#dfc199] border border-[#733c19] text-[11px] font-sans font-bold text-[#431f0a] shadow-[0_1px_0_#54270f] transition-all cursor-pointer">
+                        <span id="copy-text" data-i18n="copy_btn">复制</span>
                     </button>
                 </div>
+
+                <!-- 问号帮助按钮（点击弹出修复流程与工具弹窗） -->
+                <button onclick="openHelpModal()" data-i18n-title="help_btn_tip" title="首次打开提示身份不明或已损坏？点击查看解决流程与工具"
+                        class="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#fef8ed] hover:bg-[#fff9f0] border-2 border-[#733c19] shadow-[0_3px_0_#4d240c] active:translate-y-[2px] active:shadow-[0_1px_0_#4d240c] transition text-xs font-bold text-[#54270f] cursor-pointer select-none">
+                    <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-[#c2531a] text-[#fff9f0] text-[11px] font-black leading-none">?</span>
+                    <span data-i18n="help_btn_label" class="text-[11px]">首次打不开</span>
+                </button>
             </div>
         </section>
 
@@ -709,6 +702,26 @@
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeHelpModal();
         });
+
+        function switchInstallTab(mode) {
+            const cmdEl = document.getElementById('install-cmd');
+            const tabCurl = document.getElementById('tab-curl');
+            const tabBrew = document.getElementById('tab-brew');
+            if (!cmdEl || !tabCurl || !tabBrew) return;
+
+            const activeCls = 'px-1.5 py-0.5 rounded bg-[#733c19] text-[#fef8ed] shadow-sm transition-all cursor-pointer';
+            const inactiveCls = 'px-1.5 py-0.5 rounded text-[#683315] hover:text-[#431f0a] transition-all cursor-pointer';
+
+            if (mode === 'brew') {
+                cmdEl.textContent = 'brew install liceal/tap/maple';
+                tabBrew.className = activeCls;
+                tabCurl.className = inactiveCls;
+            } else {
+                cmdEl.textContent = 'curl -fsSL https://liceal.github.io/maple/install.sh | bash';
+                tabCurl.className = activeCls;
+                tabBrew.className = inactiveCls;
+            }
+        }
 
         function copyCmd(cmdId, labelId) {
             const cmdEl = document.getElementById(cmdId);
