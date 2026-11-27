@@ -26,7 +26,7 @@ enum Tags {
         ("orange", "橙色", .systemOrange, 7)
     ]
 
-    private static let userDefaultsKey = "MapleTagList_v3"
+    private static let userDefaultsKey = "MapleTagList_v4"
     private static let hiddenTagsKey = "MapleHiddenTags"
     private static let deletedTagsKey = "MapleDeletedSystemTags"
     private static let customTagColorsKey = "MapleCustomTagColors"
@@ -96,112 +96,183 @@ enum Tags {
         return matched
     }
 
-    /// 访达原生标准标签预设集（与用户真实访达侧栏标签完全一致）
-    static let defaultFinderTags: [TagDefinition] = [
-        TagDefinition(name: "学习", color: .systemBlue, colorKey: "blue", xattrIndex: 4),
-        TagDefinition(name: "工作", color: .systemOrange, colorKey: "orange", xattrIndex: 7),
-        TagDefinition(name: "Book", color: .systemGreen, colorKey: "green", xattrIndex: 2),
-        TagDefinition(name: "Game", color: .systemPurple, colorKey: "purple", xattrIndex: 3),
-        TagDefinition(name: "蓝色", color: .systemBlue, colorKey: "blue", xattrIndex: 4),
-        TagDefinition(name: "橙色", color: .systemOrange, colorKey: "orange", xattrIndex: 7),
-        TagDefinition(name: "视频", color: .clear, colorKey: "none", xattrIndex: 0),
-        TagDefinition(name: "效率", color: .systemRed, colorKey: "red", xattrIndex: 6),
-        TagDefinition(name: "灰色", color: .systemGray, colorKey: "gray", xattrIndex: 1),
-        TagDefinition(name: "家庭", color: .clear, colorKey: "none", xattrIndex: 0)
-    ]
-
-    /// 访达系统中存在但默认未勾选在侧栏显示的额外系统颜色标签（在「所有标签…」分栏中展示）
-    static let extraFinderSystemTags: [TagDefinition] = [
-        TagDefinition(name: "黄色", color: .systemYellow, colorKey: "yellow", xattrIndex: 5),
-        TagDefinition(name: "绿色", color: .systemGreen, colorKey: "green", xattrIndex: 2)
-    ]
-
-    /// 获取所有标签。
-    /// 机制对齐 QSpace Pro：优先从系统访达（ProjectsItems.sfl3 / SyncedPreferences / com.apple.finder.plist）加载真实标签；
-    /// 若无特殊覆写，以访达系统标签为基准。
+    /// 获取所有标签：实时以系统访达（ProjectsItems.sfl3 / SyncedPreferences / com.apple.finder.plist）为准，
+    /// 保持名称、颜色与顺序与访达一致；并叠加用户在 Maple 内手动隐藏或额外新增的标签。
     static var all: [TagDefinition] {
         if let cached = _cachedAll { return cached }
 
         startFinderWatcherIfNeeded()
 
         let hiddenSet = Set((UserDefaults.standard.array(forKey: hiddenTagsKey) as? [String]) ?? [])
+        let deletedSet = Set((UserDefaults.standard.array(forKey: deletedTagsKey) as? [String]) ?? [])
+        let customColors = (UserDefaults.standard.dictionary(forKey: customTagColorsKey) as? [String: String]) ?? [:]
 
-        // 1. 如果本地有已持久化的自定义列表且非空，且包含标签
+        // 1. 优先实时从系统访达读取真实标签（确保在访达重命名、改色、调整顺序后自动同步）
+        let loadedFromSystem = loadFinderTagsFromSystem(includeUnpinned: false)
+        if !loadedFromSystem.isEmpty {
+            var list: [TagDefinition] = []
+            var seen = Set<String>()
+            for def in loadedFromSystem {
+                if hiddenSet.contains(def.name) || deletedSet.contains(def.name) { continue }
+                seen.insert(def.name)
+                if let customKey = customColors[def.name], let p = palette.first(where: { $0.key == customKey }) {
+                    list.append(TagDefinition(name: def.name, color: p.color, colorKey: p.key, xattrIndex: p.xattrIndex))
+                } else {
+                    list.append(def)
+                }
+            }
+            _cachedAll = list
+            return list
+        }
+
+        // 2. 若系统访达无返回，回退使用本地已保存的标签列表（如用户在 Maple 中手动新增的标签）
         if let stored = UserDefaults.standard.array(forKey: userDefaultsKey) as? [[String: Any]], !stored.isEmpty {
             var list: [TagDefinition] = []
             for dict in stored {
                 guard let name = dict["name"] as? String, !name.isEmpty,
                       let key = dict["colorKey"] as? String else { continue }
-                if hiddenSet.contains(name) { continue }
+                if hiddenSet.contains(name) || deletedSet.contains(name) { continue }
                 let item = palette.first(where: { $0.key == key })
-                let color = item?.color ?? .systemGray
+                let color = item?.color ?? .clear
                 let xattr = item?.xattrIndex ?? 0
                 list.append(TagDefinition(name: name, color: color, colorKey: key, xattrIndex: xattr))
             }
-            if !list.isEmpty {
-                _cachedAll = list
-                return list
-            }
+            _cachedAll = list
+            return list
         }
 
-        // 2. 尝试从系统访达加载标签（模仿 QSpace Pro JHSFileTagManager 的加载机制）
-        let loadedFromSystem = loadFinderTagsFromSystem()
-        if !loadedFromSystem.isEmpty {
-            let filtered = loadedFromSystem.filter { !hiddenSet.contains($0.name) }
-            _cachedAll = filtered
-            save(list: filtered)
-            return filtered
-        }
-
-        // 3. 系统托底预设
-        let defaultList = defaultFinderTags.filter { !hiddenSet.contains($0.name) }
-        _cachedAll = defaultList
-        save(list: defaultList)
-        return defaultList
+        _cachedAll = []
+        return []
     }
 
-    /// 从系统访达中读取真实标签（参考 QSpace Pro JHSFileTagManager）
-    static func loadFinderTagsFromSystem() -> [TagDefinition] {
+    /// 直接解析 NSKeyedArchiver 二进制 plist（.sfl3 / .sfl2）中的 $objects 图，不依赖私有类（如 SFLListItem），无弃用警告且兼容 macOS 11~15+
+    private static func parseSFLTags(from data: Data, includeUnpinned: Bool) -> [TagDefinition] {
+        guard let rootPlist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let objects = rootPlist["$objects"] as? [Any],
+              let top = rootPlist["$top"] as? [String: Any] else {
+            return []
+        }
+
+        func uidIndex(_ value: Any?) -> Int? {
+            guard let value else { return nil }
+            if value is [String: Any] || value is [Any] || value is String || value is NSNumber || value is Data {
+                if let dict = value as? [String: Any], let idx = dict["CF$UID"] as? Int {
+                    return idx
+                }
+                return nil
+            }
+            let desc = String(describing: value)
+            if desc.contains("CFKeyedArchiverUID"),
+               let range = desc.range(of: "value = "),
+               let end = desc[range.upperBound...].firstIndex(of: "}") {
+                return Int(desc[range.upperBound..<end])
+            }
+            return nil
+        }
+
+        func resolve(_ value: Any?) -> Any? {
+            guard let value else { return nil }
+            if let idx = uidIndex(value), idx >= 0, idx < objects.count {
+                let obj = objects[idx]
+                if let str = obj as? String, str == "$null" { return nil }
+                return obj
+            }
+            if let str = value as? String, str == "$null" { return nil }
+            return value
+        }
+
+        func decodeDict(_ obj: Any?) -> [String: Any]? {
+            guard let raw = resolve(obj) as? [String: Any] else { return nil }
+            if let keys = raw["NS.keys"] as? [Any], let vals = raw["NS.objects"] as? [Any] {
+                var out: [String: Any] = [:]
+                for i in 0..<min(keys.count, vals.count) {
+                    if let k = resolve(keys[i]) as? String, let v = resolve(vals[i]) {
+                        out[k] = v
+                    }
+                }
+                return out
+            }
+            var out: [String: Any] = [:]
+            for (k, v) in raw where k != "$class" {
+                if let resolved = resolve(v) {
+                    out[k] = resolved
+                }
+            }
+            return out
+        }
+
+        func decodeArray(_ obj: Any?) -> [Any]? {
+            guard let raw = resolve(obj) else { return nil }
+            if let arr = raw as? [Any] {
+                return arr.compactMap { resolve($0) }
+            }
+            if let dict = raw as? [String: Any], let objs = dict["NS.objects"] as? [Any] {
+                return objs.compactMap { resolve($0) }
+            }
+            return nil
+        }
+
+        guard let rootDict = decodeDict(top["root"]),
+              let rawItems = decodeArray(rootDict["items"]) else {
+            return []
+        }
+
+        var result: [TagDefinition] = []
+        var seen = Set<String>()
+
+        for rawItem in rawItems {
+            guard let item = decodeDict(rawItem) else { continue }
+            let props = decodeDict(item["CustomItemProperties"]) ?? item
+
+            guard let name = (item["Name"] as? String)
+                    ?? (props["Name"] as? String),
+                  !name.isEmpty else { continue }
+
+            if !includeUnpinned {
+                if let showing = props["kLSSharedTagFileListItemShowing"] as? Bool, !showing {
+                    continue
+                }
+                if let isHidden = props["com.apple.LSSharedFileList.ItemIsHidden"] as? Bool, isHidden {
+                    continue
+                }
+            }
+
+            let colorIdx = (props["kLSSharedTagFileListItemLabel"] as? Int)
+                ?? (props["Label"] as? Int)
+                ?? (item["Label"] as? Int)
+                ?? 0
+
+            let pItem = palette.first(where: { $0.xattrIndex == colorIdx }) ?? palette[0]
+            if seen.insert(name).inserted {
+                result.append(TagDefinition(name: name, color: pItem.color, colorKey: pItem.key, xattrIndex: pItem.xattrIndex))
+            }
+        }
+        return result
+    }
+
+    /// 从系统访达中读取真实标签（完整保留访达名称、颜色编号与顺序）
+    static func loadFinderTagsFromSystem(includeUnpinned: Bool = false) -> [TagDefinition] {
         var result: [TagDefinition] = []
         var seenNames = Set<String>()
 
         // 策略 A: 读取 ~/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ProjectsItems.sfl3 / sfl2
+        // （需授予完全磁盘访问权限，包含访达侧栏最精确的顺序、颜色索引与勾选状态）
         let fileManager = FileManager.default
         let sflPaths = [
-            ("com.apple.LSSharedFileList.ProjectsItems.sfl3", 3),
-            ("com.apple.LSSharedFileList.ProjectsItems.sfl2", 2)
+            "com.apple.LSSharedFileList.ProjectsItems.sfl3",
+            "com.apple.LSSharedFileList.ProjectsItems.sfl2"
         ]
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         let sflDir = appSupport?.appendingPathComponent("com.apple.sharedfilelist")
 
-        for (filename, _) in sflPaths {
+        for filename in sflPaths {
             guard let fileURL = sflDir?.appendingPathComponent(filename),
-                  fileManager.fileExists(atPath: fileURL.path) else { continue }
-            if let data = try? Data(contentsOf: fileURL) {
-                if let unarchived = (try? NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(data)) as? [String: Any],
-                   let items = unarchived["items"] as? [[String: Any]] {
-                    for item in items {
-                        guard let name = (item["kLSSharedTagFileListItemLabel"] as? String)
-                                ?? (item["Name"] as? String), !name.isEmpty else { continue }
-                        let props = (item["CustomItemProperties"] as? [String: Any]) ?? item
-                        if let showing = props["kLSSharedTagFileListItemShowing"] as? Bool, !showing {
-                            continue
-                        }
-                        if let isHidden = props["com.apple.LSSharedFileList.ItemIsHidden"] as? Bool, isHidden {
-                            continue
-                        }
-                        let colorIdx = (props["kLSSharedTagFileListItemLabel"] as? Int)
-                            ?? (props["Label"] as? Int) ?? 0
-
-                        let pItem = palette.first(where: { $0.xattrIndex == colorIdx }) ?? palette[0]
-                        if !seenNames.contains(name) {
-                            seenNames.insert(name)
-                            result.append(TagDefinition(name: name, color: pItem.color, colorKey: pItem.key, xattrIndex: pItem.xattrIndex))
-                        }
-                    }
-                }
+                  fileManager.fileExists(atPath: fileURL.path),
+                  let data = try? Data(contentsOf: fileURL) else { continue }
+            let parsed = parseSFLTags(from: data, includeUnpinned: includeUnpinned)
+            if !parsed.isEmpty {
+                return parsed
             }
-            if !result.isEmpty { break }
         }
 
         // 策略 B: 读取 ~/Library/SyncedPreferences/com.apple.finder.plist 中的 values.FinderTagDict.value.FinderTags
@@ -215,6 +286,7 @@ enum Tags {
                let finderTags = value["FinderTags"] as? [[String: Any]] {
                 for item in finderTags {
                     guard let name = item["n"] as? String ?? item["name"] as? String, !name.isEmpty else { continue }
+                    if !includeUnpinned, let visible = item["v"] as? Bool, !visible { continue }
                     let colorIdx = item["l"] as? Int ?? 0
                     let pItem = palette.first(where: { $0.xattrIndex == colorIdx }) ?? palette[0]
                     if !seenNames.contains(name) {
@@ -224,40 +296,43 @@ enum Tags {
                 }
             }
         }
+        if !result.isEmpty { return result }
 
-        // 策略 C: 补充标准访达基础集（严格保持访达侧栏顺序：学习、工作、Book、Game、蓝色、橙色、视频、效率、灰色、家庭）
-        for def in defaultFinderTags {
-            if !seenNames.contains(def.name) {
-                seenNames.insert(def.name)
-                result.append(def)
-            }
-        }
-
-        // 策略 D: 读取 ~/Library/Preferences/com.apple.finder.plist (ViewSettingsDictionary 中可能存在的额外标签)
+        // 策略 C: 无完全磁盘访问权限时的降级读取：
+        // 仅使用颜色准确的 FavoriteTagNames（槽位 1..7 固定对应红/橙/黄/绿/蓝/紫/灰，改名后颜色依然准确）
+        // 以及磁盘文件上实际使用的 Spotlight 标签（自带 xattr 真实颜色），不读取残缺无色的 ViewSettingsDictionary
         let finderPrefPath = ("~/Library/Preferences/com.apple.finder.plist" as NSString).expandingTildeInPath
+        let spotlightTags = discoverSpotlightTags()
         if fileManager.fileExists(atPath: finderPrefPath),
            let data = try? Data(contentsOf: URL(fileURLWithPath: finderPrefPath)),
            let plist = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any] {
 
-            if let vsd = plist["ViewSettingsDictionary"] as? [String: Any] {
-                for key in vsd.keys.sorted() {
-                    if key.hasSuffix("_Tag_ViewSettings") {
-                        let name = String(key.dropLast("_Tag_ViewSettings".count))
-                        if !name.isEmpty && !seenNames.contains(name) {
-                            let matched = defaultFinderTags.first(where: { $0.name == name })
-                            let pItem = matched != nil ? (matched!.colorKey, matched!.color, matched!.xattrIndex) : ("none", NSColor.clear, 0)
-                            seenNames.insert(name)
-                            result.append(TagDefinition(name: name, color: pItem.1, colorKey: pItem.0, xattrIndex: pItem.2))
-                        }
+            let slotToXattr = [1: 6, 2: 7, 3: 5, 4: 2, 5: 4, 6: 3, 7: 1]
+
+            if let favs = plist["FavoriteTagNames"] as? [String] {
+                for (slotIdx, name) in favs.enumerated() where !name.isEmpty && !seenNames.contains(name) {
+                    seenNames.insert(name)
+                    if let sp = spotlightTags.first(where: { $0.name == name }), sp.xattrIndex > 0 {
+                        result.append(sp)
+                    } else if let xattrIdx = slotToXattr[slotIdx],
+                              let pItem = palette.first(where: { $0.xattrIndex == xattrIdx }) {
+                        result.append(TagDefinition(name: name, color: pItem.color, colorKey: pItem.key, xattrIndex: pItem.xattrIndex))
+                    } else {
+                        result.append(TagDefinition(name: name, color: .clear, colorKey: "none", xattrIndex: 0))
                     }
                 }
             }
         }
 
+        for sp in spotlightTags where !sp.name.isEmpty && !seenNames.contains(sp.name) {
+            seenNames.insert(sp.name)
+            result.append(sp)
+        }
+
         return result
     }
 
-    /// 获取系统中存在的全部标签（包含边栏显示的标签、从边栏隐藏的标签、以及磁盘 Spotlight 中发现的所有标签如 "123"）
+    /// 获取系统中存在的全部标签（包含边栏显示的标签、访达中未勾选在边栏的标签、以及磁盘 Spotlight 中发现的所有标签）
     static var allSystemTags: [TagDefinition] {
         var result: [TagDefinition] = []
         var seen = Set<String>()
@@ -271,8 +346,8 @@ enum Tags {
             result.append(def)
         }
 
-        // 2. 从 Spotlight 动态发现磁盘文件上的所有标签（例如 "123"）
-        for def in discoverSpotlightTags() {
+        // 2. 访达中存在但未在边栏显示的标签
+        for def in loadFinderTagsFromSystem(includeUnpinned: true) {
             if !seen.contains(def.name) && !deletedSet.contains(def.name) {
                 seen.insert(def.name)
                 if let customKey = customColors[def.name], let p = palette.first(where: { $0.key == customKey }) {
@@ -283,8 +358,8 @@ enum Tags {
             }
         }
 
-        // 3. 被隐藏的标准访达标签与系统额外标签（如「黄色」「绿色」）
-        for def in (defaultFinderTags + extraFinderSystemTags) {
+        // 3. 从 Spotlight 动态发现磁盘文件上的所有标签
+        for def in discoverSpotlightTags() {
             if !seen.contains(def.name) && !deletedSet.contains(def.name) {
                 seen.insert(def.name)
                 if let customKey = customColors[def.name], let p = palette.first(where: { $0.key == customKey }) {
@@ -298,7 +373,7 @@ enum Tags {
         return result
     }
 
-    /// 供「所有标签…」分栏视图使用的全部标签列表（按访达原生 zh_CN 排序：数字 -> 中文拼音 -> 英文，如 123, 橙色, 工作, 黄色, 灰色, 家庭, 蓝色, 绿色, 视频, 效率, 学习, Book, Game）
+    /// 供「所有标签…」分栏视图使用的全部标签列表
     static var allTagsForBrowser: [TagDefinition] {
         let locale = Locale(identifier: "zh_CN")
         return allSystemTags.sorted {
@@ -405,26 +480,29 @@ enum Tags {
         return result
     }
 
-    /// 监听访达配置变动（像 QSpace Pro NSFilePresenter 一样）
-    private static var finderWatcherSource: DispatchSourceFileSystemObject?
+    /// 监听访达标签配置变动（com.apple.finder.plist 与 ProjectsItems.sfl3）
+    private static var finderWatcherSources: [DispatchSourceFileSystemObject] = []
     private static func startFinderWatcherIfNeeded() {
-        guard finderWatcherSource == nil else { return }
-        let finderPrefPath = ("~/Library/Preferences/com.apple.finder.plist" as NSString).expandingTildeInPath
-        let fd = open(finderPrefPath, O_EVTONLY)
-        guard fd >= 0 else { return }
-
-        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete, .attrib], queue: .main)
-        source.setEventHandler {
-            // 系统访达设置变动，清理缓存并广播通知
-            _cachedAll = nil
-            _cachedSpotlightTags = nil
-            NotificationCenter.default.post(name: .tagsDidChange, object: nil)
+        guard finderWatcherSources.isEmpty else { return }
+        let paths = [
+            ("~/Library/Preferences/com.apple.finder.plist" as NSString).expandingTildeInPath,
+            ("~/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ProjectsItems.sfl3" as NSString).expandingTildeInPath
+        ]
+        for path in paths {
+            let fd = open(path, O_EVTONLY)
+            guard fd >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete, .attrib], queue: .main)
+            source.setEventHandler {
+                _cachedAll = nil
+                _cachedSpotlightTags = nil
+                NotificationCenter.default.post(name: .tagsDidChange, object: nil)
+            }
+            source.setCancelHandler {
+                close(fd)
+            }
+            source.resume()
+            finderWatcherSources.append(source)
         }
-        source.setCancelHandler {
-            close(fd)
-        }
-        source.resume()
-        finderWatcherSource = source
     }
 
     private static func save(list: [TagDefinition]) {
@@ -456,9 +534,6 @@ enum Tags {
         if let found = all.first(where: { $0.name == name }) {
             return found.color
         }
-        if let found = defaultFinderTags.first(where: { $0.name == name }) {
-            return found.color
-        }
         if let customColors = UserDefaults.standard.dictionary(forKey: customTagColorsKey) as? [String: String],
            let key = customColors[name],
            let p = palette.first(where: { $0.key == key }) {
@@ -475,9 +550,6 @@ enum Tags {
         if let found = discoverSpotlightTags().first(where: { $0.name == name }), found.color != .clear {
             return found.color
         }
-        if let found = palette.first(where: { $0.defaultName == name || $0.key == name.lowercased() }) {
-            return found.color
-        }
         return .clear
     }
 
@@ -486,18 +558,12 @@ enum Tags {
         if let found = all.first(where: { $0.name == name }) {
             return found.xattrIndex
         }
-        if let found = defaultFinderTags.first(where: { $0.name == name }) {
-            return found.xattrIndex
-        }
         if let customColors = UserDefaults.standard.dictionary(forKey: customTagColorsKey) as? [String: String],
            let key = customColors[name],
            let p = palette.first(where: { $0.key == key }) {
             return p.xattrIndex
         }
         if let found = discoverSpotlightTags().first(where: { $0.name == name }) {
-            return found.xattrIndex
-        }
-        if let found = palette.first(where: { $0.defaultName == name || $0.key == name.lowercased() }) {
             return found.xattrIndex
         }
         return 0

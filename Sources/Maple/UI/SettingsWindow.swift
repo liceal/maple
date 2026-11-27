@@ -107,7 +107,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             PermissionTarget(
                 id: "fulldisk",
                 title: "完全磁盘访问权限 (Full Disk Access)".localized,
-                subtitle: "允许全局搜索访问受保护目录而无需逐个弹窗".localized,
+                subtitle: "用于完整同步访达标签、访问废纸篓及全局搜索受保护目录（可选）".localized,
                 url: home.appendingPathComponent("Library/Safari"),
                 tccService: "SystemPolicyAllFiles",
                 isFullDisk: true
@@ -619,6 +619,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
 
         stack.addArrangedSubview(permSection.container)
 
+        let explainSection = makeCardSection(
+            title: "权限影响与取舍说明".localized,
+            subtitle: "Maple 严格遵循 macOS 隐私机制，所有权限均按需开启，您可以根据需要自行决定是否授权。".localized
+        )
+        let explainText = NSTextField(wrappingLabelWithString: "• 桌面 / 文稿 / 下载权限：仅用于浏览与搜索对应个人文件夹；不授予时仅无法读取对应目录，不影响其他路径。\n• 完全磁盘访问权限（可选，不强制开启）：\n  - 开启后：可与访达侧栏 1:1 完整同步自定义标签（名称、颜色、顺序与显示状态），支持直接浏览和清倒废纸篓，以及全局搜索受保护目录。\n  - 不开启：所有核心文件管理功能均可正常使用；受 macOS 系统隐私限制（第三方应用无法读取访达的标签列表文件），侧栏将仅显示访达基础 7 色常用标签与磁盘上已给文件打过的标签。".localized)
+        explainText.font = .systemFont(ofSize: 11.5)
+        explainText.textColor = .secondaryLabelColor
+        explainSection.contentStack.addArrangedSubview(explainText)
+        stack.addArrangedSubview(explainSection.container)
+
         NSLayoutConstraint.activate([
             content.topAnchor.constraint(equalTo: scroll.topAnchor),
             content.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
@@ -630,7 +640,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -20),
-            permSection.container.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            permSection.container.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            explainSection.container.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
 
         refreshPermissionStatuses()

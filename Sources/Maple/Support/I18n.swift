@@ -64,6 +64,10 @@ public final class I18n {
     // MARK: - 词条对照字典表
     private let translations: [AppLanguage: [String: String]] = [
         .en: [
+            "用于完整同步访达标签、访问废纸篓及全局搜索受保护目录（可选）": "Syncs full Finder sidebar tags, Trash access, and global search in protected folders (optional)",
+            "权限影响与取舍说明": "Permission Impact & Trade-offs",
+            "Maple 严格遵循 macOS 隐私机制，所有权限均按需开启，您可以根据需要自行决定是否授权。": "Maple strictly follows macOS privacy controls. All permissions are optional so you can decide what to grant.",
+            "• 桌面 / 文稿 / 下载权限：仅用于浏览与搜索对应个人文件夹；不授予时仅无法读取对应目录，不影响其他路径。\n• 完全磁盘访问权限（可选，不强制开启）：\n  - 开启后：可与访达侧栏 1:1 完整同步自定义标签（名称、颜色、顺序与显示状态），支持直接浏览和清倒废纸篓，以及全局搜索受保护目录。\n  - 不开启：所有核心文件管理功能均可正常使用；受 macOS 系统隐私限制（第三方应用无法读取访达的标签列表文件），侧栏将仅显示访达基础 7 色常用标签与磁盘上已给文件打过的标签。": "• Desktop / Documents / Downloads: Only used to browse and search those personal folders. Denying access only restricts those folders.\n• Full Disk Access (Optional):\n  - Enabled: Syncs Finder sidebar tags 1:1 (names, colors, order, and visibility), enables Trash browsing/emptying, and allows global search in protected directories.\n  - Disabled: All core file management works normally. Due to macOS privacy limits (third-party apps cannot read Finder’s tag list file without it), the sidebar shows Finder’s 7 favorite color tags plus tags already applied to files on disk.",
             "不分组": "None",
             "名称首字母": "Initial Letter",
             " (默认)": " (Default)",
@@ -559,6 +563,10 @@ public final class I18n {
 
         ],
         .zhHant: [
+            "用于完整同步访达标签、访问废纸篓及全局搜索受保护目录（可选）": "用於完整同步訪達標籤、存取垃圾桶及全域搜尋受保護目錄（可選）",
+            "权限影响与取舍说明": "權限影響與取捨說明",
+            "Maple 严格遵循 macOS 隐私机制，所有权限均按需开启，您可以根据需要自行决定是否授权。": "Maple 嚴格遵循 macOS 隱私機制，所有權限均按需開啟，您可依需求自行決定是否授權。",
+            "• 桌面 / 文稿 / 下载权限：仅用于浏览与搜索对应个人文件夹；不授予时仅无法读取对应目录，不影响其他路径。\n• 完全磁盘访问权限（可选，不强制开启）：\n  - 开启后：可与访达侧栏 1:1 完整同步自定义标签（名称、颜色、顺序与显示状态），支持直接浏览和清倒废纸篓，以及全局搜索受保护目录。\n  - 不开启：所有核心文件管理功能均可正常使用；受 macOS 系统隐私限制（第三方应用无法读取访达的标签列表文件），侧栏将仅显示访达基础 7 色常用标签与磁盘上已给文件打过的标签。": "• 桌面 / 文件 / 下載權限：僅用於瀏覽與搜尋對應個人資料夾；不授予時僅無法讀取對應目錄，不影響其他路徑。\n• 完全磁碟取用權限（可選，不強制開啟）：\n  - 開啟後：可與訪達側欄 1:1 完整同步自訂標籤（名稱、顏色、順序與顯示狀態），支援直接瀏覽與清空垃圾桶，以及全域搜尋受保護目錄。\n  - 不開啟：所有核心檔案管理功能均可正常使用；受 macOS 系統隱私限制（第三方應用無法讀取訪達的標籤清單檔案），側欄僅顯示訪達基礎 7 色常用標籤與磁碟上已標記檔案的標籤。",
             "不分组": "不分組",
             "名称首字母": "名稱首字母",
             " (默认)": " (預設)",
@@ -1054,6 +1062,10 @@ public final class I18n {
 
         ],
         .ja: [
+            "用于完整同步访达标签、访问废纸篓及全局搜索受保护目录（可选）": "Finderタグの完全同期、ゴミ箱の表示、保護フォルダのグローバル検索に使用（任意）",
+            "权限影响与取舍说明": "権限の影響と選択について",
+            "Maple 严格遵循 macOS 隐私机制，所有权限均按需开启，您可以根据需要自行决定是否授权。": "Maple は macOS のプライバシー保護に準拠しています。すべての権限は任意のため、必要に応じてご判断ください。",
+            "• 桌面 / 文稿 / 下载权限：仅用于浏览与搜索对应个人文件夹；不授予时仅无法读取对应目录，不影响其他路径。\n• 完全磁盘访问权限（可选，不强制开启）：\n  - 开启后：可与访达侧栏 1:1 完整同步自定义标签（名称、颜色、顺序与显示状态），支持直接浏览和清倒废纸篓，以及全局搜索受保护目录。\n  - 不开启：所有核心文件管理功能均可正常使用；受 macOS 系统隐私限制（第三方应用无法读取访达的标签列表文件），侧栏将仅显示访达基础 7 色常用标签与磁盘上已给文件打过的标签。": "• デスクトップ / 書類 / ダウンロード権限：該当フォルダの閲覧・検索のみに使用します。許可しない場合も他のフォルダには影響しません。\n• フルディスクアクセス（任意・必須ではありません）：\n  - オン：Finderサイドバーのカスタムタグ（名前・色・並び順・表示状態）を1:1で同期し、ゴミ箱の閲覧・空にする操作や保護領域のグローバル検索が利用可能になります。\n  - オフ：主要なファイル管理機能はすべて通常通り利用できます。macOS のプライバシー制限により、サイドバーには Finder の基本7色タグとディスク上で使用済みのタグのみ表示されます。",
             "不分组": "なし",
             "名称首字母": "頭文字",
             " (默认)": " (デフォルト)",
